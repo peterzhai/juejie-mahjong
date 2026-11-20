@@ -1,4 +1,5 @@
-import { _decorator, Component, Node, UITransform, Label, Graphics, Color, Button, sys } from 'cc';
+import { defaultFanConfig, resolveFanConfig, type FanConfig } from '@quejie/fan-config';
+import { _decorator, Component, Node, UITransform, Label, Graphics, Color, Button, EditBox, sys } from 'cc';
 import { GameManager } from './GameManager';
 import { TableScene } from './TableScene';
 const { ccclass } = _decorator;
@@ -8,14 +9,19 @@ const { ccclass } = _decorator;
 export class ClientBootstrap extends Component {
   private page: Node | null = null;
   private preset = 'gd128';
+  private playerCount = 4;
+  private config: FanConfig | null = null;
   private difficulty: 'easy' | 'normal' | 'hard' = 'normal';
   protected start(): void {
     try {
       const saved = JSON.parse(sys.localStorage.getItem('quejie-settings') || '{}');
+      if ([2, 3, 4].includes(saved.playerCount)) this.playerCount = saved.playerCount;
+      if (saved.config && resolveFanConfig(saved.config).ok) this.config = saved.config;
       if (['gd128', 'gd136', 'gd100', 'gd108'].includes(saved.preset)) this.preset = saved.preset;
       if (['easy', 'normal', 'hard'].includes(saved.difficulty)) this.difficulty = saved.difficulty;
     } catch { /* Defaults remain usable when storage is unavailable. */ }
     const gm = GameManager.ensureInstance();
+    gm.playerCount = this.playerCount; gm.customConfig = this.config;
     gm.navigate = (screen) => screen === 'Table' ? this.table() : this.lobby();
     this.lobby();
   }
@@ -48,13 +54,18 @@ export class ClientBootstrap extends Component {
     this.label(p, '雀界 · 广东麻将', 0, 190, 48);
     this.label(p, '四方入座，闲叙一局', 0, 120, 22);
     this.button(p, '单机对局', 0, 20, () => GameManager.ensureInstance().enterLocalPve(this.preset, this.difficulty));
+    this.button(p, '创建联机房间', -300, -60, () => GameManager.ensureInstance().uiCreateRoom());
+    this.button(p, '准备并填充 AI', 300, -60, () => { const gm = GameManager.ensureInstance(); gm.ready(); gm.startWithAi(); });
     this.button(p, '玩法设置', 0, -60, () => this.settings());
     this.label(p, '本地练习 · 一人对战三位 AI', 0, -230, 18);
   }
   private settings(): void {
     const p = this.screen('Settings');
+    this.persistSettings();
+    this.button(p, '完整规则配置', 0, -110, () => this.fullSettings());
     this.label(p, '玩法设置', 0, 230, 38);
     const presets = ['gd128', 'gd136', 'gd100', 'gd108'];
+    this.button(p, `人数：${this.playerCount}`, 0, 170, () => { this.playerCount = this.playerCount === 4 ? 2 : this.playerCount + 1; this.settings(); });
     this.button(p, `牌张方案：${this.preset}`, 0, 100, () => {
       this.preset = presets[(presets.indexOf(this.preset) + 1) % presets.length]!; this.settings();
     });
@@ -62,11 +73,35 @@ export class ClientBootstrap extends Component {
       const levels = ['easy', 'normal', 'hard'] as const;
       this.difficulty = levels[(levels.indexOf(this.difficulty) + 1) % 3]!; this.settings();
     });
-    this.label(p, '点击切换参数，下一次开局生效', 0, -90, 18);
+    this.label(p, '完整配置保存后优先于快捷牌张方案', 0, -155, 16);
     this.button(p, '保存并返回', 0, -190, () => {
-      try { sys.localStorage.setItem('quejie-settings', JSON.stringify({ preset: this.preset, difficulty: this.difficulty })); } catch { /* Session values remain available. */ }
+      this.persistSettings();
       this.lobby();
     });
+  }
+  private fullSettings(): void {
+    const p = this.screen('FullRules');
+    this.label(p, '完整规则配置（JSON）', 0, 300, 30);
+    const n = new Node('ConfigInput'); p.addChild(n);
+    n.addComponent(UITransform).setContentSize(1080, 460);
+    const text = this.label(n, '', 0, 0, 16).getComponent(Label)!;
+    text.getComponent(UITransform)!.setContentSize(1060, 440);
+    const edit = n.addComponent(EditBox); edit.textLabel = text;
+    edit.inputMode = EditBox.InputMode.ANY;
+    edit.string = JSON.stringify(this.config ?? defaultFanConfig(), null, 2);
+    this.button(p, '校验并保存', 170, -290, () => {
+      try {
+        const config = JSON.parse(edit.string) as FanConfig;
+        const result = resolveFanConfig(config);
+        if (!result.ok) { this.label(p, result.errors.map(e => e.message).join('; ').slice(0, 90), 0, -220, 14); return; }
+        this.config = config; this.persistSettings(); this.settings();
+      } catch { this.label(p, '配置格式错误，请检查 JSON', 0, -220, 18); }
+    });
+    this.button(p, '返回', -170, -290, () => this.settings());
+  }
+  private persistSettings(): void {
+    const gm = GameManager.ensureInstance(); gm.playerCount = this.playerCount; gm.customConfig = this.config; gm.pvePreset = this.preset;
+    try { sys.localStorage.setItem('quejie-settings', JSON.stringify({ preset:this.preset, difficulty:this.difficulty, playerCount:this.playerCount, config:this.config })); } catch { /* Session settings remain active. */ }
   }
   private table(): void {
     const p = this.screen('Table');

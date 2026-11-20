@@ -80,6 +80,7 @@ export interface HandResult {
 }
 
 export interface ReplayMeta {
+  playerCount?: number;
   fanConfigVersion: string;
   configHash: string;
   tileSetPresetId?: string;
@@ -111,6 +112,7 @@ interface ClaimWindow {
 }
 
 export interface GameOptions {
+  playerCount?: number;
   resolved: ResolvedFanConfig;
   seed: number;
   dealer: Seat;
@@ -120,6 +122,7 @@ export interface GameOptions {
 }
 
 export class MahjongGame {
+  readonly playerCount: number;
   readonly resolved: ResolvedFanConfig;
   readonly index: TileIndex;
   readonly wall: Wall;
@@ -151,6 +154,9 @@ export class MahjongGame {
   private lastSettlements: WinnerSettlement[] = [];
 
   constructor(options: GameOptions) {
+    this.playerCount = options.playerCount ?? 4;
+    if (![2, 3, 4].includes(this.playerCount) || options.dealer < 0 || options.dealer >= this.playerCount) throw new Error('人数必须为2至4人，庄家必须在座');
+    this.scores = Array(this.playerCount).fill(0);
     this.resolved = options.resolved;
     this.index = new TileIndex(options.resolved);
     this.wall = new Wall(options.resolved, options.seed);
@@ -158,7 +164,7 @@ export class MahjongGame {
     this.dealer = options.dealer;
     this.roundWind = options.roundWind ?? SEAT_WINDS[options.dealer]!;
     this.roomLevel = options.roomLevel ?? 1;
-    this.players = [0, 1, 2, 3].map((seat) => ({
+    this.players = Array.from({ length: this.playerCount }, (_, i) => i).map((seat) => ({
       seat,
       name: options.playerNames?.[seat] ?? `玩家${seat + 1}`,
       hand: new Array<number>(this.index.ids.length).fill(0),
@@ -354,7 +360,7 @@ export class MahjongGame {
   }
 
   private resolveClaims(claim: ClaimWindow): void {
-    const dist = (s: Seat) => (s - claim.fromSeat + 4) % 4;
+    const dist = (s: Seat) => (s - claim.fromSeat + this.playerCount) % this.playerCount;
     const huSeats = claim.pendingSeats
       .filter((s) => claim.responses.get(s)!.type === 'hu')
       .sort((a, b) => dist(a) - dist(b));
@@ -422,7 +428,7 @@ export class MahjongGame {
       this.doDrawGame();
       return;
     }
-    this.currentSeat = (discarder + 1) % 4;
+    this.currentSeat = (discarder + 1) % this.playerCount;
     this.mingangGiver = null;
     this.drawFor(this.currentSeat, false);
     this.phase = 'turn';
@@ -435,7 +441,7 @@ export class MahjongGame {
     }
     const options = new Map<Seat, ActionOption[]>();
     const pending: Seat[] = [];
-    for (let s = 0; s < 4; s++) {
+    for (let s = 0; s < this.playerCount; s++) {
       if (s === fromSeat) continue;
       const p = this.players[s]!;
       const seatOpts: ActionOption[] = [];
@@ -564,7 +570,7 @@ export class MahjongGame {
   }
 
   private settleKongScoreAll(to: Seat, kind: 'bugang' | 'ankang'): void {
-    for (let s = 0; s < 4; s++) {
+    for (let s = 0; s < this.playerCount; s++) {
       if (s !== to) this.settleKongScore(s, to, kind);
     }
   }
@@ -603,7 +609,7 @@ export class MahjongGame {
       dealer: winnerSeat === this.dealer,
       kongCount: this.kongCount,
       wallTiles: this.wall.liveRemaining,
-      playerCount: 4,
+      playerCount: this.playerCount,
       roomLevel: this.roomLevel,
     });
 
@@ -654,19 +660,19 @@ export class MahjongGame {
     }
 
     const score = evaluation.score;
-    const deltas = [0, 0, 0, 0];
+    const deltas = Array<number>(this.playerCount).fill(0);
     if (paymentKind === 'bao') {
-      deltas[payerSeat!]! -= score * 3;
-      deltas[winnerSeat]! += score * 3;
+      deltas[payerSeat!]! -= score * (this.playerCount - 1);
+      deltas[winnerSeat]! += score * (this.playerCount - 1);
       this.events.push({
         type: 'payment',
         from: payerSeat!,
         to: winnerSeat,
-        amount: score * 3,
+        amount: score * (this.playerCount - 1),
         reason: `包三家（${baoReasons.join('；')}）`,
       });
     } else if (paymentKind === 'selfDraw') {
-      for (let s = 0; s < 4; s++) {
+      for (let s = 0; s < this.playerCount; s++) {
         if (s !== winnerSeat) {
           deltas[s]! -= score;
           deltas[winnerSeat]! += score;
@@ -678,7 +684,7 @@ export class MahjongGame {
       deltas[winnerSeat]! += score;
       this.events.push({ type: 'payment', from: payerSeat!, to: winnerSeat, amount: score, reason: '点炮' });
     }
-    for (let s = 0; s < 4; s++) this.scores[s]! += deltas[s]!;
+    for (let s = 0; s < this.playerCount; s++) this.scores[s]! += deltas[s]!;
 
     const settlement: WinnerSettlement = {
       winnerSeat,
@@ -726,6 +732,7 @@ export class MahjongGame {
   private buildReplayMeta(): ReplayMeta {
     const cap = this.resolved.scoring.cap;
     return {
+      playerCount: this.playerCount,
       fanConfigVersion: this.resolved.version,
       configHash: this.resolved.configHash,
       tileSetPresetId: this.resolved.tileSetPresetId,
@@ -746,7 +753,7 @@ export class MahjongGame {
     const winners = this.lastSettlements.map((s) => s.winnerSeat);
     let dealerNext = this.dealer;
     if (winners.length > 0 && !winners.includes(this.dealer)) {
-      dealerNext = (winners[0]! + 1) % 4; // 闲家胡牌下家坐庄；一炮多响含庄家则连庄
+      dealerNext = (winners[0]! + 1) % this.playerCount; // 闲家胡牌下家坐庄；一炮多响含庄家则连庄
     }
     this.events.push({ type: 'settle', settlements: this.lastSettlements, deltas });
     this.result = {

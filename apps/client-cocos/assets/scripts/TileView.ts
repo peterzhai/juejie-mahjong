@@ -134,9 +134,10 @@ function safeLabel(tileId: string): string {
   }
 }
 
-/** 花色配色：中红 / 发绿 / 其余墨色 */
+/** 经典花色配色：万红、条绿、筒蓝；中红、发绿。 */
 function suitColor(tileId: string): Color {
-  if (tileId === 'HR') return COLOR_RED;
-  if (tileId === 'HG') return COLOR_GREEN;
+  if (tileId.startsWith('C') || tileId === 'HR') return COLOR_RED;
+  if (tileId.startsWith('B') || tileId === 'HG') return COLOR_GREEN;
+  if (tileId.startsWith('D')) return new Color(32, 92, 165, 255);
   return COLOR_TEXT;
 }

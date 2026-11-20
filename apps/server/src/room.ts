@@ -29,6 +29,8 @@ export interface RoomSession {
 }
 
 export interface RoomOptions {
+  playerCount?: number;
+  roomLevel?: number;
   resolved: ResolvedFanConfig;
   turnTimeoutMs: number;
   claimTimeoutMs: number;
@@ -39,6 +41,8 @@ export interface RoomOptions {
 const HANDS_PER_ROOM_LIMIT = 16;
 
 export class Room {
+  readonly playerCount: number;
+  readonly roomLevel: number;
   readonly code: string;
   readonly resolved: ResolvedFanConfig;
   readonly sessions: (RoomSession | null)[] = [null, null, null, null];
@@ -56,6 +60,11 @@ export class Room {
   private closed = false;
 
   constructor(code: string, resolved: ResolvedFanConfig, opts: RoomOptions) {
+    this.playerCount = opts.playerCount ?? 4;
+    if (![2, 3, 4].includes(this.playerCount)) throw new Error('人数必须为2至4');
+    this.roomLevel = opts.roomLevel ?? 1;
+    this.sessions = Array(this.playerCount).fill(null);
+    this.scores = Array(this.playerCount).fill(0);
     this.code = code;
     this.resolved = resolved;
     this.turnTimeoutMs = opts.turnTimeoutMs;
@@ -69,7 +78,7 @@ export class Room {
   }
 
   join(name: string): { seat: Seat; token: string } | null {
-    for (let s = 0; s < 4; s++) {
+    for (let s = 0; s < this.playerCount; s++) {
       const slot = this.sessions[s];
       if (slot === null) {
         const token = randomToken();
@@ -115,7 +124,7 @@ export class Room {
 
   /** 用 AI 填满空位 */
   fillWithAi(): void {
-    for (let s = 0; s < 4; s++) {
+    for (let s = 0; s < this.playerCount; s++) {
       if (this.sessions[s] === null) {
         this.sessions[s] = {
           seat: s,
@@ -146,7 +155,8 @@ export class Room {
       seed,
       dealer: this.dealer,
       roundWind: 'east',
-      roomLevel: 1,
+      roomLevel: this.roomLevel,
+      playerCount: this.playerCount,
       playerNames: this.sessions.map((s) => s!.name),
     });
     this.game.start();
@@ -267,7 +277,7 @@ export class Room {
     const game = this.game!;
     this.drainEvents(this.drainedUpTo);
     const result: HandResult = game.result!;
-    for (let s = 0; s < 4; s++) this.scores[s]! += result.deltas[s]!;
+    for (let s = 0; s < this.playerCount; s++) this.scores[s]! += result.deltas[s]!;
     const replay = recordReplay(game, []);
     this.replays.push(replay);
     this.log(

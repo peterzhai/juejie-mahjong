@@ -14,6 +14,7 @@ import {
   resolveFanConfig,
   validateFanConfig,
   type ResolvedFanConfig,
+  type FanConfig,
 } from '@quejie/fan-config';
 import type { ClientMessage, Seat } from '@quejie/protocol';
 import { Room, randomRoomCode, randomToken, type RoomSession } from './room.js';
@@ -89,7 +90,7 @@ function sendTo(conn: ConnState, msg: unknown): void {
   if (conn.socket.readyState === 1) conn.socket.send(JSON.stringify(msg));
 }
 
-function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, capType?: string, capFixed?: number): void {
+function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, capType?: string, capFixed?: number, config?: FanConfig, playerCount = 4): void {
   if (conn.room) {
     sendTo(conn, { type: 'error', code: 'E_IN_ROOM', message: '已在一个房间中，请先离开' });
     return;
@@ -98,13 +99,20 @@ function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, ca
   while (rooms.has(code)) code = randomRoomCode();
   let resolved: ResolvedFanConfig;
   try {
-    resolved = resolvedConfig(preset, roomLevel, capType, capFixed);
+    if (![2, 3, 4].includes(playerCount)) throw new Error('人数必须为2至4');
+    if (config) {
+      const checked = resolveFanConfig(config);
+      if (!checked.ok || !checked.resolved) throw new Error(checked.errors.map(e => e.message).join('; '));
+      resolved = checked.resolved;
+    } else resolved = resolvedConfig(preset, roomLevel, capType, capFixed);
   } catch (e) {
     sendTo(conn, { type: 'error', code: 'E_CONFIG', message: String((e as Error).message) });
     return;
   }
   const room = new Room(code, resolved, {
     resolved,
+    playerCount,
+    roomLevel,
     turnTimeoutMs: TURN_TIMEOUT_MS,
     claimTimeoutMs: CLAIM_TIMEOUT_MS,
     aiDelayMs: AI_DELAY_MS,
@@ -190,7 +198,7 @@ function handleMessage(conn: ConnState, raw: string): void {
       conn.name = String(msg.name || '玩家').slice(0, 20);
       break;
     case 'createRoom':
-      handleCreateRoom(conn, String(msg.preset ?? 'gd128'), Number(msg.roomLevel ?? 1), msg.capType, msg.capFixed);
+      handleCreateRoom(conn, String(msg.preset ?? 'gd128'), Number(msg.roomLevel ?? 1), msg.capType, msg.capFixed, msg.config, msg.playerCount);
       break;
     case 'joinRoom':
       handleJoinRoom(conn, String(msg.roomCode));

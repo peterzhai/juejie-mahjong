@@ -1,3 +1,4 @@
+import { tileImages } from './tile-images.js';
 /**
  * 雀界·广东麻将 H5 调试客户端（联机 + 本地 PVE 双模式）
  * DOM 渲染，data-testid 锚点供端到端自动化使用。
@@ -10,7 +11,7 @@ import {
   mulberry32,
   type PlayerAction,
 } from '@quejie/mahjong-core';
-import { defaultFanConfig, resolveFanConfig, tileLabel, type ResolvedFanConfig } from '@quejie/fan-config';
+import { defaultFanConfig, TILE_SET_PRESETS, clonePreset, autoDisableUnmetFans, DEFAULT_FANS, DEFAULT_BONUS_FANS, resolveFanConfig, tileLabel, type FanConfig, type ResolvedFanConfig } from '@quejie/fan-config';
 
 // —— 模式与状态 ——
 let ws: WebSocket | null = null;
@@ -157,19 +158,6 @@ function avatarEl(seat: number, name: string, size = 34): HTMLElement {
   return el;
 }
 
-/** TileId → Unicode 麻将牌字符（emoji 字形，接近真实牌面） */
-function tileGlyph(id: string): string {
-  const cp = (n: number): string => String.fromCodePoint(n);
-  const p = id[0]!;
-  if (p === 'C') return cp(0x1f007 + (parseInt(id[1]!, 10) - 1));
-  if (p === 'B') return cp(0x1f010 + (parseInt(id[1]!, 10) - 1));
-  if (p === 'D') return cp(0x1f019 + (parseInt(id[1]!, 10) - 1));
-  if (p === 'W') return cp(0x1f000 + 'ESWN'.indexOf(id[1]!));
-  if (p === 'H') return cp(0x1f004 + 'RGW'.indexOf(id[1]!));
-  if (p === 'F') return cp(0x1f022 + ((parseInt(id[1]!, 10) - 1) % 8));
-  return tileLabel(id);
-}
-
 /** 牌排序：万→条→筒→花→风→字 */
 function sortTiles(ids: string[]): string[] {
   const key = (id: string): number => {
@@ -188,13 +176,14 @@ function sortTiles(ids: string[]): string[] {
 function tileEl(tile: string, small: boolean, onClick?: () => void): HTMLElement {
   const el = document.createElement('span');
   el.className = `tile${small ? ' small' : ''}`;
-  el.textContent = tileGlyph(tile);
-  if (onClick) {
-    el.tabIndex = 0;
-    el.setAttribute('role', 'button');
-    el.setAttribute('aria-label', tileLabel(tile));
-    el.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick(); } };
-  }
+  const artwork = tileImages[tile];
+  if (artwork) {
+    const img = document.createElement('img');
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(artwork)}`;
+    img.alt = tileLabel(tile);
+    img.draggable = false;
+    el.appendChild(img);
+  } else el.textContent = tileLabel(tile);
   el.title = tileLabel(tile);
   el.dataset.testid = small ? `tile-sm-${tile}` : `hand-tile-${tile}`;
   el.dataset.tile = tile;
@@ -232,7 +221,9 @@ function renderTable(): void {
     seatEl.innerHTML = '';
     const isTurn = s === st.currentSeat && st.phase !== 'over';
     seatEl.classList.toggle('current', isTurn);
-    const seat = st.seats[s]!;
+    const seat = st.seats[s];
+    seatEl.classList.toggle('hidden', !seat);
+    if (!seat) continue;
     const isMe = s === st.viewSeat;
 
     const head = document.createElement('div');
@@ -441,10 +432,20 @@ function renderSettle(settlements: SettleView[], outcome: string, scores: number
 }
 
 // —— 本地 PVE ——
+let lastConfig: FanConfig | undefined;
 function buildLocalConfig(preset: string, capMode: string): { resolved: ResolvedFanConfig | null; errors: string } {
   const cap = capOf(capMode);
   const cfg = defaultFanConfig();
-  cfg.tileSet = structuredClone(cfg.tileSet);
+  cfg.tileSet = clonePreset(preset);
+  cfg.fans = structuredClone(DEFAULT_FANS);
+  cfg.bonusFans = structuredClone(DEFAULT_BONUS_FANS);
+  cfg.tileSet.redCenterMode = ($("red-mode") as HTMLSelectElement).value as "wild" | "normal" | "off";
+  if (cfg.tileSet.redCenterMode !== "off") cfg.tileSet.honors.red = { enabled: true, copies: 4 };
+  cfg.tileSet.redCenterDrawOnly = ($("draw-only") as HTMLInputElement).checked;
+  for (const fan of [...cfg.fans, ...cfg.bonusFans]) {
+    fan.value = Number(($("fan-" + fan.id) as HTMLInputElement).value);
+    fan.enabled = ($("enabled-" + fan.id) as HTMLInputElement).checked;
+  }
   cfg.tileSet.preset = preset;
   if (cfg.tileSet.redCenterMode !== 'wild') cfg.scoring.redCenterBonus.enabled = false;
   if (cap.capType === 'unlimited') {
@@ -456,7 +457,13 @@ function buildLocalConfig(preset: string, capMode: string): { resolved: Resolved
   } else if (cap.capType === 'fixed') {
     cfg.scoring.cap.value = { type: 'fixed', fixed: cap.capFixed ?? 3 };
   }
-  const r = resolveFanConfig(cfg);
+  let finalConfig = autoDisableUnmetFans(cfg).config;
+  try {
+    const text = ($('full-config') as HTMLTextAreaElement).value.trim();
+    if (text) finalConfig = JSON.parse(text) as FanConfig;
+  } catch { return { resolved: null, errors: '完整配置 JSON 格式错误' }; }
+  lastConfig = finalConfig;
+  const r = resolveFanConfig(finalConfig);
   return { resolved: r.resolved ?? null, errors: r.errors.map((e) => e.message).join('; ') };
 }
 
@@ -473,6 +480,7 @@ function startLocal(): void {
   local = {
     game: new MahjongGame({
       resolved,
+      playerCount: Number(($("player-count") as HTMLSelectElement).value),
       seed,
       dealer: 0,
       roundWind: 'east',
@@ -480,7 +488,7 @@ function startLocal(): void {
       playerNames: [name, 'AI·东', 'AI·南', 'AI·西'],
     }),
     resolved,
-    scores: [0, 0, 0, 0],
+    scores: Array(Number(($("player-count") as HTMLSelectElement).value)).fill(0),
     rngSeed: seed + 1,
   };
   local.game.start();
@@ -608,7 +616,7 @@ function driveLocalAi(): void {
 
 function finishLocalHand(): void {
   const result = local!.game.result!;
-  for (let s = 0; s < 4; s++) local!.scores[s]! += result.deltas[s]!;
+  for (let s = 0; s < local!.scores.length; s++) local!.scores[s]! += result.deltas[s]!;
   renderLocal();
   renderSettle(result.settlements, result.outcome, local!.scores);
   log(`本地对局结束：${result.outcome === 'win' ? '胡牌' : '流局'}，庄家下一局：座位 ${result.dealerNext}`);
@@ -633,10 +641,14 @@ $('btn-create').onclick = async () => {
     return;
   }
   const preset = ($('preset-select') as HTMLSelectElement).value;
+  const checked = buildLocalConfig(preset, ($('cap-select') as HTMLSelectElement).value);
+  if (!checked.resolved) { alert(checked.errors); return; }
   const cap = capOf(($('cap-select') as HTMLSelectElement).value);
   send({ type: 'hello', name: ($('name-input') as HTMLInputElement).value || '玩家' });
   send({
     type: 'createRoom',
+    config: lastConfig,
+    playerCount: Number(($('player-count') as HTMLSelectElement).value),
     preset,
     roomLevel: 1,
     capType: cap.capType as 'fixed' | 'tiered' | 'formula' | 'unlimited' | undefined,
@@ -668,7 +680,61 @@ void token;
 
 // 设置持久化；存储不可用时仍保留当前会话的设置。
 function aiDelay(): number { return Number(($('ai-delay') as HTMLSelectElement).value) || 600; }
-const preferenceIds = ['name-input', 'preset-select', 'cap-select', 'ai-delay', 'single-click', 'reduce-motion'];
+const advanced = document.createElement('div');
+advanced.innerHTML = `<p>以下高级规则用于本地单机。联机房间暂沿用服务端规则。红中变会在所选牌组中加入四张红中，无红中的方案总张数会增加四张。</p><label>人数<select id="player-count"><option value="2">2 人</option><option value="3">3 人</option><option value="4" selected>4 人</option></select></label><label>红中模式<select id="red-mode"><option value="wild">红中变（万能牌）</option><option value="normal">普通红中</option><option value="off">关闭红中变</option></select></label><label>红中变仅自摸<input type="checkbox" id="draw-only"></label><h2>番型与附加番</h2><p>勾选启用，右侧填写番数；缺少所需牌张的番型将自动禁用。</p>`;
+for (const fan of [...DEFAULT_FANS, ...DEFAULT_BONUS_FANS]) {
+  const row = document.createElement('label');
+  row.innerHTML = `<span><input type="checkbox" id="enabled-${fan.id}" checked> ${fan.name}</span><input id="fan-${fan.id}" aria-label="${fan.name}番数" type="number" min="0" max="64" step="1" value="${fan.value}" style="width:80px">`;
+  advanced.appendChild(row);
+}
+$('rule-settings').appendChild(advanced);
+const full = document.createElement('details');
+full.innerHTML = `<summary>完整规则配置（高级）</summary><p>完整配置优先于快捷选项。包含牌张数量、七对万能牌、番型、计分方式、底分、封顶范围/分组/突破条件、无红中加成、杠分、漏胡、一炮多响及包牌开关。</p><button type="button" id="load-config">载入当前快捷配置</button><button type="button" id="clear-config">恢复快捷配置</button><textarea id="full-config" aria-label="完整规则 JSON" rows="20" style="width:100%;font-family:monospace"></textarea>`;
+$('rule-settings').appendChild(full);
+$('load-config').onclick = () => {
+  const area = $('full-config') as HTMLTextAreaElement;
+  const previous = area.value; area.value = '';
+  const result = buildLocalConfig(($('preset-select') as HTMLSelectElement).value, ($('cap-select') as HTMLSelectElement).value);
+  area.value = result.resolved ? JSON.stringify(lastConfig, null, 2) : previous;
+  renderConfigEditor();
+  savePreferences();
+};
+$('clear-config').onclick = () => { ($('full-config') as HTMLTextAreaElement).value = ''; editor.replaceChildren(); savePreferences(); };
+// A recursive editor exposes every field of the validated configuration, including arrays.
+const editor = document.createElement('div');
+full.appendChild(editor);
+const names: Record<string, string> = { tileSet:'牌张组成', suits:'数字花色', character:'万', bamboo:'条', dot:'筒', honors:'字牌', flowers:'花牌', copies:'张数', enabled:'启用', scoring:'计分', mode:'模式', baseScore:'底分', cap:'封顶', value:'番数/参数', fixed:'固定番数', hardCap:'安全上限', minFan:'保底番', maxScore:'分数上限', scope:'封顶范围', groups:'分组封顶', bypass:'突破封顶', fanIds:'番型ID', conditions:'条件', redCenterBonus:'无红中加成', addFan:'增加番数', bypassCap:'封顶后加成', onlyWhenWild:'仅万能牌模式', rules:'玩法规则', missedWinLock:'漏胡锁定', multiWinEnabled:'一炮多响', robConcealedKongForThirteenOrphans:'十三幺抢暗杠', baoRobKong:'抢杠包牌', baoKongBlossom:'杠开包牌', baoTwelveExposed:'十二张落地包牌', baoBigDragonWind:'大三元大四喜包牌', kongScores:'杠分', mingangPayerMultiplier:'明杠支付倍数', bugangEach:'补杠各付', ankangEach:'暗杠各付', redCenterMode:'红中模式', redCenterDrawOnly:'仅自摸', sevenPairsWithWild:'七对允许万能牌', dealerExtraTile:'庄家额外牌', fans:'基础番型', bonusFans:'附加番', name:'名称', playerOffsets:'庄闲封顶偏移', dealer:'庄家', nonDealer:'闲家', type:'类型', tiers:'分档番数', formula:'计算公式' };
+function renderConfigEditor(): void {
+  editor.replaceChildren();
+  const area = $('full-config') as HTMLTextAreaElement;
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(area.value); } catch { return; }
+  const persist = () => { area.value = JSON.stringify(data, null, 2); savePreferences(); };
+  function visit(parent: HTMLElement, object: Record<string, unknown>, key: string): void {
+    const value = object[key];
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const section = document.createElement('details'); section.open = ['scoring', 'rules'].includes(key);
+      const title = document.createElement('summary'); title.textContent = names[key] || key; section.appendChild(title);
+      for (const child of Object.keys(value)) visit(section, value as Record<string, unknown>, child);
+      parent.appendChild(section); return;
+    }
+    const row = document.createElement('label'); const title = document.createElement('span'); title.textContent = names[key] || key; row.appendChild(title);
+    const input = document.createElement('input'); input.type = typeof value === 'boolean' ? 'checkbox' : typeof value === 'number' ? 'number' : 'text';
+    input.style.width = '55%'; input.checked = value === true; input.value = Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
+    input.onchange = () => { try { object[key] = Array.isArray(value) ? JSON.parse(input.value) : typeof value === 'boolean' ? input.checked : typeof value === 'number' ? Number(input.value) : input.value; input.setCustomValidity(''); persist(); } catch { input.setCustomValidity('请输入有效 JSON 数组'); input.reportValidity(); } };
+    row.appendChild(input); parent.appendChild(row);
+  }
+  for (const key of Object.keys(data)) visit(editor, data, key);
+}
+$('load-config').addEventListener('click', renderConfigEditor);
+$('full-config').addEventListener('change', renderConfigEditor);
+$('clear-config').addEventListener('click', () => editor.replaceChildren());
+const presetSelect = $('preset-select') as HTMLSelectElement;
+presetSelect.replaceChildren();
+for (const [id, preset] of Object.entries(TILE_SET_PRESETS)) {
+  const option = document.createElement('option'); option.value = id; option.textContent = `${id} · ${preset.description}`; presetSelect.appendChild(option);
+}
+const preferenceIds = ['full-config', 'name-input', 'preset-select', 'cap-select', 'ai-delay', 'single-click', 'reduce-motion', 'player-count', 'red-mode', 'draw-only', ...[...DEFAULT_FANS, ...DEFAULT_BONUS_FANS].flatMap(f => ['fan-' + f.id, 'enabled-' + f.id])];
 for (const id of ['name-input', 'preset-select', 'cap-select']) {
   const field = $(id);
   field.setAttribute('aria-label', id === 'name-input' ? '玩家昵称' : id === 'preset-select' ? '麻将规则' : '封顶番数');
@@ -678,6 +744,7 @@ try {
   const saved = JSON.parse(localStorage.getItem('quejie-settings') || '{}') as Record<string, unknown>;
   for (const id of preferenceIds) {
     const field = $(id) as HTMLInputElement;
+    if (!(id in saved)) continue;
     if (field.type === 'checkbox') field.checked = saved[id] === true;
     else if (typeof saved[id] === 'string') field.value = saved[id] as string;
   }
@@ -691,5 +758,6 @@ function savePreferences(): void {
 }
 for (const id of preferenceIds) $(id).addEventListener('change', savePreferences);
 savePreferences();
+renderConfigEditor();
 $('btn-settings').onclick = () => ($('settings-dialog') as HTMLDialogElement).showModal();
 autoPlayBox.onchange = () => { if (autoPlayBox.checked) autoAct(); else clearTimeout(autoTimer); };

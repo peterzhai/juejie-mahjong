@@ -21,6 +21,7 @@ import {
   defaultFanConfig,
   resolveFanConfig,
   validateFanConfig,
+  type FanConfig,
   type ResolvedFanConfig,
 } from '@quejie/fan-config';
 import type { GameEventMsg, GameOverMsg, GameStateMsg, SettlementView } from '@quejie/protocol';
@@ -45,6 +46,8 @@ if (typeof performance === 'undefined') {
 
 /** PVE 对局启动参数 */
 export interface LocalPveOptions {
+  config?: FanConfig;
+  playerCount?: number;
   presetId?: string;
   seed?: number;
   dealer?: Seat;
@@ -83,6 +86,8 @@ export class LocalPveDriver extends Component {
   private lastDealerNext: Seat = 0;
   /** 最近使用的预设（连庄复用配置） */
   private lastPreset = DEFAULT_PRESET;
+  public customConfig: FanConfig | null = null;
+  public playerCount = 4;
 
   /** AI 行动定时器防重入标记 */
   private aiTimerArmed = false;
@@ -92,15 +97,25 @@ export class LocalPveDriver extends Component {
   // —— 对局生命周期 ——
 
   /** 启动一局（首次或连庄下一局；resolved 配置按预设重建） */
+  private savedOptions: LocalPveOptions = {};
   public startMatch(options: LocalPveOptions = {}): void {
+    this.savedOptions = { ...options };
     this.stopMatch();
     const presetId = options.presetId ?? this.lastPreset;
     this.lastPreset = presetId;
-    this.resolved = this.buildResolved(presetId);
+    if (options.config) this.customConfig = options.config;
+    this.playerCount = options.playerCount ?? this.playerCount;
+    if (this.customConfig) {
+      const result = resolveFanConfig(this.customConfig);
+      if (!result.resolved || !result.ok) throw new Error(result.errors.map(e => e.message).join('; '));
+      this.resolved = result.resolved;
+    } else this.resolved = this.buildResolved(presetId);
+    if (this.cumulative.length !== this.playerCount) this.cumulative = Array(this.playerCount).fill(0);
     const dealer = options.dealer ?? 0;
     const names = options.playerNames ?? ['你', 'AI·下家', 'AI·对家', 'AI·上家'];
     const seed = options.seed ?? Math.floor(Math.random() * 1_000_000_000);
     this.game = new MahjongGame({
+      playerCount: this.playerCount,
       resolved: this.resolved,
       seed,
       dealer,
@@ -124,7 +139,7 @@ export class LocalPveDriver extends Component {
 
   /** 连庄开下一局（沿用累计分数与最近预设） */
   public startNextHand(): void {
-    this.startMatch({ dealer: this.lastDealerNext, presetId: this.lastPreset });
+    this.startMatch({ ...this.savedOptions, dealer: this.lastDealerNext, presetId: this.lastPreset });
   }
 
   /** 停止并清场（返回大厅/重开时调用） */
@@ -181,7 +196,7 @@ export class LocalPveDriver extends Component {
     const g = this.game!;
     let aiPending = false;
     let humanPending = false;
-    for (let s = 0 as Seat; s < 4; s++) {
+    for (let s = 0 as Seat; s < g.players.length; s++) {
       const opts = g.legalOptions(s);
       if (opts.length === 0) continue;
       if (s === HUMAN_SEAT) humanPending = true;
@@ -215,7 +230,7 @@ export class LocalPveDriver extends Component {
     }
     if (g.phase === 'claim') {
       // 找第一个待响应 AI 座位，决策并提交
-      for (let s = 0 as Seat; s < 4; s++) {
+      for (let s = 0 as Seat; s < g.players.length; s++) {
         if (s === HUMAN_SEAT) continue;
         const opts = g.legalOptions(s);
         if (opts.length === 0) continue;

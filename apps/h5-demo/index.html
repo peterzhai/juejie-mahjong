@@ -242,6 +242,12 @@
     body.in-game .table { min-height:65vh; display:flex; flex-direction:column; justify-content:space-between; }
     body.in-game .bottom-grid { margin-top:20px; }
     body.in-game header.top { padding-bottom:12px; }
+    /* Use text glyphs so platform emoji rendering cannot override suit colors. */
+    .tile { font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', serif; font-variant-emoji: text; }
+    .tile.suit-characters { color: #b5232c; }
+    .tile.suit-bamboo { color: #167442; }
+    .tile.suit-dots { color: #205ca5; }
+    .tile img { width:100%; height:100%; object-fit:contain; pointer-events:none; }
   </style>
 </head>
 <body>

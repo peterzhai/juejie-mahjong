@@ -60,6 +60,7 @@ export function verifyReplay(data: ReplayData, playerNames?: string[]): ReplayVe
   try {
     game = new MahjongGame({
       resolved: data.resolvedConfigSnapshot,
+      playerCount: data.meta.playerCount ?? 4,
       seed: data.meta.seed,
       dealer: data.meta.dealer,
       roundWind: data.meta.roundWind,

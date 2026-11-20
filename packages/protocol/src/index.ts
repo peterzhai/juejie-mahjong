@@ -1,3 +1,4 @@
+import type { FanConfig } from '@quejie/fan-config';
 /** 前后端共享消息协议（PRD 3.2：客户端只提交意图，服务端权威裁决） */
 
 export type Seat = number;
@@ -18,6 +19,8 @@ export interface HelloMsg {
 }
 export interface CreateRoomMsg {
   type: 'createRoom';
+  config?: FanConfig;
+  playerCount?: number;
   preset?: string;
   roomLevel?: number;
   scoringMode?: 'max' | 'additive';

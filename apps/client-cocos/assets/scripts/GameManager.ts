@@ -5,7 +5,7 @@
  */
 
 import { _decorator, Component, director, EditBox, Node } from 'cc';
-import type { ResolvedFanConfig } from '@quejie/fan-config';
+import type { FanConfig, ResolvedFanConfig } from '@quejie/fan-config';
 import type {
   ActionPayload,
   CreateRoomMsg,
@@ -46,6 +46,8 @@ export class GameManager extends Component {
 
   @property({ tooltip: '本地 PVE 默认预设（gd100~gd144）' })
   public pvePreset = DEFAULT_PRESET;
+  public playerCount = 4;
+  public customConfig: FanConfig | null = null;
 
   // —— 运行时状态（只读供 UI 查询） ——
   /** 网络客户端（心跳/重连/分发封装） */
@@ -144,7 +146,7 @@ export class GameManager extends Component {
   /** 创建房间（默认 gd128 预设） */
   public createRoom(opts?: Partial<CreateRoomMsg>): void {
     this.connectOnline();
-    this.net.send({ type: 'createRoom', preset: DEFAULT_PRESET, roomLevel: 1, ...opts });
+    this.net.send({ type: 'createRoom', preset: this.pvePreset, roomLevel: 1, playerCount: this.playerCount, ...(this.customConfig ? { config: this.customConfig } : {}), ...opts });
   }
 
   /** 加入房间 */
@@ -202,7 +204,7 @@ export class GameManager extends Component {
     };
     driver.onEvent = (e) => this.routeGameEvent(e);
     driver.onOver = (o) => this.onGameOver(o);
-    driver.startMatch({ presetId: presetId ?? this.pvePreset });
+    driver.startMatch({ presetId: presetId ?? this.pvePreset, playerCount: this.playerCount, config: this.customConfig ?? undefined });
   }
 
   /** PVE 结算后继续（连庄下一局，累计分保留） */
