@@ -136,6 +136,8 @@ export class TableScene extends Component {
     this.maxWallSeen = Math.max(this.maxWallSeen, state.wallRemaining);
     this.lastWallRemaining = state.wallRemaining;
 
+    const positions = state.seats.length === 2 ? [0, 2] : state.seats.length === 3 ? [0, 1, 3] : [0, 1, 2, 3];
+    this.seatNodes.forEach((node, index) => { node.active = positions.includes(index); });
     // 座位与区域渲染
     for (const sv of state.seats) {
       this.renderSeat(sv.seat, state);
@@ -371,7 +373,10 @@ export class TableScene extends Component {
 
   /** 座位 → 相对位置（下/右/上/左） */
   private relSeat(seat: number): number {
-    return (seat - this.viewSeat + 4) % 4;
+    const count = this.lastState?.seats.length ?? 4;
+    const offset = (seat - this.viewSeat + count) % count;
+    const positions = count === 2 ? [0, 2] : count === 3 ? [0, 1, 3] : [0, 1, 2, 3];
+    return positions[offset]!;
   }
 
   /** 座位名（越界兜底） */

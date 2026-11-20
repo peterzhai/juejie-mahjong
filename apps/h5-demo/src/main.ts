@@ -216,14 +216,21 @@ function renderTable(): void {
     `轮到 <b>${seatName(st.currentSeat)}</b> ${st.phase === 'claim' ? '等待宣告' : st.phase === 'turn' ? '出牌' : st.phase === 'over' ? '' : ''}<br>` +
     `阶段：${st.phase}｜剩余手牌 ${st.hand.length} 张`;
 
-  for (let s = 0; s < 4; s++) {
-    const seatEl = $(`seat-${s}`);
-    seatEl.innerHTML = '';
+  const count = st.seats.length;
+  const positions = count === 2 ? [0, 2] : count === 3 ? [0, 1, 3] : [0, 1, 2, 3];
+  for (let position = 0; position < 4; position++) {
+    const seatEl = $(`seat-${position}`);
+    seatEl.replaceChildren();
+    seatEl.classList.remove('current');
+    seatEl.classList.toggle('hidden', !positions.includes(position));
+  }
+  for (let offset = 0; offset < count; offset++) {
+    const s = (st.viewSeat + offset) % count;
+    const seatEl = $(`seat-${positions[offset]}`);
+    seatEl.dataset.seat = String(s);
     const isTurn = s === st.currentSeat && st.phase !== 'over';
     seatEl.classList.toggle('current', isTurn);
-    const seat = st.seats[s];
-    seatEl.classList.toggle('hidden', !seat);
-    if (!seat) continue;
+    const seat = st.seats[s]!;
     const isMe = s === st.viewSeat;
 
     const head = document.createElement('div');
