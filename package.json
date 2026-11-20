@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run build --workspace=@quejie/h5-demo",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "server": "npm run build && node apps/server/dist/index.js"

@@ -250,7 +250,10 @@ export class GameManager extends Component {
   }
 
   /** 确保处于 Table 场景（不在则异步加载） */
+  public navigate: ((screen: 'Lobby' | 'Table') => void) | null = null;
+
   private ensureTableScene(): void {
+    if (this.navigate) { if (!this.tableScene) this.navigate('Table'); return; }
     const cur = director.getScene();
     if (cur && cur.name === 'Table') return;
     director.loadScene('Table', (err) => {
@@ -260,6 +263,7 @@ export class GameManager extends Component {
 
   /** 返回大厅场景 */
   public backToLobby(): void {
+    if (this.navigate) { this.navigate('Lobby'); return; }
     const cur = director.getScene();
     if (cur && cur.name !== 'Lobby') {
       director.loadScene('Lobby', (err) => {

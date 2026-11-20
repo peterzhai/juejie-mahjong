@@ -89,7 +89,7 @@ export class TableScene extends Component {
 
   protected onLoad(): void {
     const gm = GameManager.ensureInstance();
-    gm.attachTable(this);
+
 
     // 牌面图集注册（name → SpriteFrame）
     this.faceMap = new Map();
@@ -101,6 +101,7 @@ export class TableScene extends Component {
     this.ensureSubviews();
     this.bindButtons();
     this.setStatus('等待开局…');
+    gm.attachTable(this);
   }
 
   protected onDestroy(): void {

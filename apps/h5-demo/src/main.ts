@@ -34,9 +34,14 @@ function log(msg: string): void {
   const line = document.createElement('div');
   line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
   el.prepend(line);
+  while (el.childElementCount > 200) el.lastElementChild?.remove();
 }
 
 function showPanel(id: string): void {
+  const playing = id === 'table-panel';
+  document.body.classList.toggle('in-game', playing);
+  $('btn-home').classList.toggle('hidden', !playing);
+  if (location.hash !== (playing ? '#game' : '#lobby')) history.pushState(null, '', playing ? '#game' : '#lobby');
   for (const p of ['room-panel', 'table-panel']) {
     $(p).classList.toggle('hidden', p !== id);
   }
@@ -129,21 +134,77 @@ function renderPlayers(players: { seat: number; name: string; ai: boolean; ready
   const el = $('players');
   el.innerHTML = '';
   for (const p of players) {
-    const span = document.createElement('span');
-    span.className = 'badge';
-    span.dataset.testid = `player-${p.seat}`;
-    span.textContent = `${p.seat === mySeat ? '★' : ''}${p.name}${p.ai ? '(AI)' : ''}${p.ready ? '✓' : ''}${p.connected ? '' : '(断线)'}`;
-    el.appendChild(span);
+    const chip = document.createElement('span');
+    chip.className = `player-chip${p.seat === mySeat ? ' me' : ''}`;
+    chip.dataset.testid = `player-${p.seat}`;
+    chip.appendChild(avatarEl(p.seat, p.name, 30));
+    const info = document.createElement('span');
+    info.textContent = `${p.name}${p.ai ? ' (AI)' : ''} · ${p.ready ? '已准备' : '未准备'}${p.connected ? '' : '（断线）'}`;
+    chip.appendChild(info);
+    el.appendChild(chip);
   }
+}
+
+const SEAT_COLORS = ['#d94f3d', '#3d7dd9', '#e8a13c', '#8a5fd0'];
+
+function avatarEl(seat: number, name: string, size = 34): HTMLElement {
+  const el = document.createElement('span');
+  el.className = 'avatar';
+  el.style.width = el.style.height = `${size}px`;
+  el.style.fontSize = `${Math.round(size * 0.48)}px`;
+  el.style.background = `linear-gradient(160deg, ${SEAT_COLORS[seat % 4]}, ${SEAT_COLORS[seat % 4]}88)`;
+  el.textContent = (name || '玩家')[0] ?? '牌';
+  return el;
+}
+
+/** TileId → Unicode 麻将牌字符（emoji 字形，接近真实牌面） */
+function tileGlyph(id: string): string {
+  const cp = (n: number): string => String.fromCodePoint(n);
+  const p = id[0]!;
+  if (p === 'C') return cp(0x1f007 + (parseInt(id[1]!, 10) - 1));
+  if (p === 'B') return cp(0x1f010 + (parseInt(id[1]!, 10) - 1));
+  if (p === 'D') return cp(0x1f019 + (parseInt(id[1]!, 10) - 1));
+  if (p === 'W') return cp(0x1f000 + 'ESWN'.indexOf(id[1]!));
+  if (p === 'H') return cp(0x1f004 + 'RGW'.indexOf(id[1]!));
+  if (p === 'F') return cp(0x1f022 + ((parseInt(id[1]!, 10) - 1) % 8));
+  return tileLabel(id);
+}
+
+/** 牌排序：万→条→筒→花→风→字 */
+function sortTiles(ids: string[]): string[] {
+  const key = (id: string): number => {
+    const p = id[0]!;
+    const suit = p === 'C' ? 0 : p === 'B' ? 1 : p === 'D' ? 2 : p === 'F' ? 3 : p === 'W' ? 4 : p === 'H' ? 5 : 6;
+    let rank = 0;
+    if (/[CBD]/.test(p)) rank = parseInt(id[1]!, 10);
+    else if (p === 'F') rank = parseInt(id[1]!, 10);
+    else if (p === 'W') rank = 'ESWN'.indexOf(id[1]!);
+    else if (p === 'H') rank = 'RGW'.indexOf(id[1]!);
+    return suit * 100 + rank;
+  };
+  return [...ids].sort((a, b) => key(a) - key(b));
 }
 
 function tileEl(tile: string, small: boolean, onClick?: () => void): HTMLElement {
   const el = document.createElement('span');
   el.className = `tile${small ? ' small' : ''}`;
-  el.textContent = tileLabel(tile);
+  el.textContent = tileGlyph(tile);
+  if (onClick) {
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', tileLabel(tile));
+    el.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick(); } };
+  }
+  el.title = tileLabel(tile);
   el.dataset.testid = small ? `tile-sm-${tile}` : `hand-tile-${tile}`;
   el.dataset.tile = tile;
   if (onClick) el.onclick = onClick;
+  return el;
+}
+
+function tileBackEl(small: boolean): HTMLElement {
+  const el = document.createElement('span');
+  el.className = `tile back${small ? ' small' : ''}`;
   return el;
 }
 
@@ -154,46 +215,92 @@ function renderTable(): void {
   $('wall-count').textContent = `牌墙 ${st.wallRemaining - st.deadWall} / ${st.wallRemaining}（死墙 ${st.deadWall}）`;
   $('dealer-info').textContent = `庄家：座位 ${st.dealer}｜本局`;
   $('scores').textContent = `分数 ${st.scores.map((s, i) => `${seatName(i)}:${s}`).join('　')}`;
-  $('claim-hint').textContent = st.phase === 'claim' ? `等待响应 ${st.claimTile ?? ''}` : '';
+  const hint = $('claim-hint');
+  if (st.phase === 'claim') {
+    hint.textContent = `等待响应 ${tileLabel(st.claimTile ?? '')}（碰 / 杠 / 胡 / 过）`;
+    hint.className = 'claim-banner';
+  } else {
+    hint.textContent = '';
+    hint.className = '';
+  }
+  $('center-info').innerHTML =
+    `轮到 <b>${seatName(st.currentSeat)}</b> ${st.phase === 'claim' ? '等待宣告' : st.phase === 'turn' ? '出牌' : st.phase === 'over' ? '' : ''}<br>` +
+    `阶段：${st.phase}｜剩余手牌 ${st.hand.length} 张`;
 
   for (let s = 0; s < 4; s++) {
     const seatEl = $(`seat-${s}`);
     seatEl.innerHTML = '';
-    seatEl.classList.toggle('current', s === st.currentSeat && st.phase !== 'over');
+    const isTurn = s === st.currentSeat && st.phase !== 'over';
+    seatEl.classList.toggle('current', isTurn);
     const seat = st.seats[s]!;
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = `${s === st.viewSeat ? '★' : ''}${seat.name}${seat.ai ? '(AI)' : ''}${seat.connected ? '' : '(断线)'}`;
-    seatEl.appendChild(name);
-    const melds = document.createElement('span');
-    melds.className = 'melds';
-    for (const m of seat.melds) {
-      const label = document.createElement('span');
-      label.textContent = `[${m.type === 'peng' ? '碰' : m.type === 'ankang' ? '暗杠' : m.type === 'bugang' ? '补杠' : '明杠'}]`;
-      label.style.color = '#9fd0b2';
-      melds.appendChild(label);
-      melds.appendChild(tileEl(m.tile, true));
+    const isMe = s === st.viewSeat;
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    head.appendChild(avatarEl(s, seat.name, 34));
+    const nameWrap = document.createElement('div');
+    const nameEl = document.createElement('div');
+    nameEl.className = 'name';
+    nameEl.textContent = `${isMe ? '★ ' : ''}${seat.name}`;
+    if (s === st.dealer) {
+      const tag = document.createElement('span');
+      tag.className = 'dealer-tag';
+      tag.textContent = '庄';
+      nameEl.appendChild(tag);
     }
-    seatEl.appendChild(melds);
-    const river = document.createElement('span');
+    const subEl = document.createElement('div');
+    subEl.className = 'sub';
+    subEl.textContent = `${seat.ai ? 'AI · ' : ''}手牌 ${seat.handCount} 张${seat.connected ? '' : ' · 断线'}`;
+    nameWrap.appendChild(nameEl);
+    nameWrap.appendChild(subEl);
+    head.appendChild(nameWrap);
+    seatEl.appendChild(head);
+
+    if (seat.melds.length > 0) {
+      const melds = document.createElement('div');
+      melds.className = 'melds';
+      for (const m of seat.melds) {
+        const tag = document.createElement('span');
+        tag.className = 'meld-tag';
+        tag.textContent = m.type === 'peng' ? '碰' : m.type === 'ankang' ? '暗杠' : m.type === 'bugang' ? '补杠' : '明杠';
+        melds.appendChild(tag);
+        melds.appendChild(tileEl(m.tile, true));
+      }
+      seatEl.appendChild(melds);
+    }
+
+    const river = document.createElement('div');
     river.className = 'river';
     river.dataset.testid = `river-${s}`;
-    for (const t of seat.discards) river.appendChild(tileEl(t, true));
+    let lastTile: HTMLElement | null = null;
+    for (const t of seat.discards) {
+      lastTile = tileEl(t, true);
+      river.appendChild(lastTile);
+    }
+    lastTile?.classList.add('last');
     seatEl.appendChild(river);
-    if (s === st.viewSeat) {
+
+    if (isMe) {
+      const handWrap = document.createElement('div');
+      handWrap.className = 'hand-row';
       const hand = document.createElement('span');
       hand.dataset.testid = 'hand';
-      for (const t of st.hand) hand.appendChild(tileEl(t, false, () => onHandTileClick(t)));
-      seatEl.appendChild(document.createTextNode(' 手牌: '));
-      seatEl.appendChild(hand);
+      for (const t of sortTiles(st.hand)) hand.appendChild(tileEl(t, false, () => onHandTileClick(t)));
+      handWrap.appendChild(hand);
       if (st.drewTile && st.phase === 'turn') {
         const drawn = document.createElement('span');
-        drawn.textContent = `（刚摸：${tileLabel(st.drewTile)}）`;
-        drawn.style.color = '#e8c56a';
-        seatEl.appendChild(drawn);
+        drawn.className = 'drawn-mark';
+        drawn.textContent = `摸牌 ${tileLabel(st.drewTile)}`;
+        handWrap.appendChild(drawn);
       }
-    } else {
-      seatEl.appendChild(document.createTextNode(` 手牌 × ${seat.handCount}`));
+      seatEl.appendChild(handWrap);
+    } else if (seat.handCount > 0) {
+      const backs = document.createElement('div');
+      backs.className = 'river';
+      backs.style.marginTop = '6px';
+      backs.dataset.testid = `opp-hand-${s}`;
+      for (let i = 0; i < seat.handCount; i++) backs.appendChild(tileBackEl(true));
+      seatEl.appendChild(backs);
     }
   }
   renderActions();
@@ -206,7 +313,7 @@ function onHandTileClick(tile: string): void {
   if (st.phase !== 'turn' || st.currentSeat !== st.viewSeat) return;
   const canDiscard = st.legalOptions.some((o) => o.type === 'discard' && o.tile === tile);
   if (!canDiscard) return;
-  if (selectedTile === tile) {
+  if (selectedTile === tile || ($('single-click') as HTMLInputElement).checked) {
     doAction({ type: 'discard', tile });
     selectedTile = null;
   } else {
@@ -271,10 +378,13 @@ function renderActions(): void {
   }
 }
 
+let autoTimer: ReturnType<typeof setTimeout> | undefined;
 function autoAct(): void {
+  clearTimeout(autoTimer);
   if (!serverState || local?.game.result) return;
   const st = serverState;
-  setTimeout(() => {
+  autoTimer = setTimeout(() => {
+    if (serverState !== st || !autoPlayBox.checked) return;
     if (st.phase === 'turn' && st.currentSeat === st.viewSeat) {
       const hu = st.legalOptions.find((o) => o.type === 'hu');
       if (hu) return doAction({ type: 'hu' });
@@ -306,8 +416,8 @@ function renderSettle(settlements: SettleView[], outcome: string, scores: number
   const el = $('settle');
   el.innerHTML = '';
   const head = document.createElement('div');
+  head.className = 'settle-head';
   head.textContent = outcome === 'win' ? '胡牌结算' : '流局（杠分退回）';
-  head.style.color = '#e8c56a';
   el.appendChild(head);
   for (const s of settlements) {
     const seatLine = document.createElement('div');
@@ -467,7 +577,7 @@ function driveLocalAi(): void {
       }
       renderLocal();
       driveLocalAi();
-    }, 120);
+    }, aiDelay());
     return;
   }
   const seat = game.currentSeat;
@@ -493,7 +603,7 @@ function driveLocalAi(): void {
     }
     renderLocal();
     driveLocalAi();
-  }, 150);
+  }, aiDelay());
 }
 
 function finishLocalHand(): void {
@@ -505,6 +615,12 @@ function finishLocalHand(): void {
 }
 
 // —— 事件绑定 ——
+$('btn-home').onclick = () => {
+  clearTimeout(autoTimer);
+  autoPlayBox.checked = false;
+  showPanel('room-panel');
+};
+window.addEventListener('popstate', () => showPanel(location.hash === '#game' && serverState ? 'table-panel' : 'room-panel'));
 $('btn-local').onclick = () => {
   mySeat = 0;
   startLocal();
@@ -549,3 +665,31 @@ $('btn-leave').onclick = () => {
 };
 void roomCode;
 void token;
+
+// 设置持久化；存储不可用时仍保留当前会话的设置。
+function aiDelay(): number { return Number(($('ai-delay') as HTMLSelectElement).value) || 600; }
+const preferenceIds = ['name-input', 'preset-select', 'cap-select', 'ai-delay', 'single-click', 'reduce-motion'];
+for (const id of ['name-input', 'preset-select', 'cap-select']) {
+  const field = $(id);
+  field.setAttribute('aria-label', id === 'name-input' ? '玩家昵称' : id === 'preset-select' ? '麻将规则' : '封顶番数');
+  $('rule-settings').appendChild(field);
+}
+try {
+  const saved = JSON.parse(localStorage.getItem('quejie-settings') || '{}') as Record<string, unknown>;
+  for (const id of preferenceIds) {
+    const field = $(id) as HTMLInputElement;
+    if (field.type === 'checkbox') field.checked = saved[id] === true;
+    else if (typeof saved[id] === 'string') field.value = saved[id] as string;
+  }
+} catch { /* 无效或不可用的存储使用默认值。 */ }
+function savePreferences(): void {
+  document.body.classList.toggle('reduce-motion', ($('reduce-motion') as HTMLInputElement).checked);
+  const values: Record<string, string | boolean> = {};
+  for (const id of preferenceIds) { const field = $(id) as HTMLInputElement; values[id] = field.type === 'checkbox' ? field.checked : field.value; }
+  try { localStorage.setItem('quejie-settings', JSON.stringify(values)); $('settings-status').textContent = '设置已保存'; }
+  catch { $('settings-status').textContent = '设置仅在当前会话生效'; }
+}
+for (const id of preferenceIds) $(id).addEventListener('change', savePreferences);
+savePreferences();
+$('btn-settings').onclick = () => ($('settings-dialog') as HTMLDialogElement).showModal();
+autoPlayBox.onchange = () => { if (autoPlayBox.checked) autoAct(); else clearTimeout(autoTimer); };
