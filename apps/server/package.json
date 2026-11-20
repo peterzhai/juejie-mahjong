@@ -1,0 +1,16 @@
+{
+  "name": "@quejie/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@quejie/fan-config": "*",
+    "@quejie/mahjong-core": "*",
+    "@quejie/protocol": "*",
+    "ws": "^8.18.0"
+  }
+}

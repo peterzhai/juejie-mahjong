@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>雀界·广东麻将 — H5 调试客户端</title>
+  <style>
+    :root { --bg: #1b5e3a; --panel: #0e3a24; --gold: #e8c56a; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: #eee; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; min-height: 100vh; }
+    #app { max-width: 1100px; margin: 0 auto; padding: 12px; }
+    .panel { background: var(--panel); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+    h1 { font-size: 20px; color: var(--gold); margin-bottom: 8px; }
+    h2 { font-size: 15px; color: var(--gold); margin: 6px 0; }
+    input, select, button { font-size: 14px; padding: 6px 10px; border-radius: 6px; border: 1px solid #3a7a55; background: #123f28; color: #eee; }
+    button { cursor: pointer; background: #2c6e45; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: #b8860b; color: #fff; font-weight: 600; }
+    button.danger { background: #8b3a3a; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+    .seat { border: 1px solid #2f5f43; border-radius: 8px; padding: 8px; margin: 6px 0; min-height: 44px; }
+    .seat.current { border-color: var(--gold); box-shadow: 0 0 6px rgba(232,197,106,.4); }
+    .seat .name { font-weight: 600; color: var(--gold); margin-right: 8px; }
+    .tile { display: inline-block; background: linear-gradient(#fdf6e3, #f0e0b8); color: #333; border-radius: 5px;
+            padding: 4px 7px; margin: 2px; font-weight: 700; font-size: 15px; cursor: pointer; border: 1px solid #c9b47e;
+            user-select: none; min-width: 30px; text-align: center; }
+    .tile.sel { outline: 3px solid #e05252; transform: translateY(-6px); }
+    .tile.small { font-size: 12px; padding: 2px 5px; cursor: default; min-width: 24px; }
+    .melds .tile { opacity: 0.92; }
+    .river .tile { opacity: 0.85; font-size: 13px; }
+    .actions button { margin: 4px; font-size: 16px; padding: 10px 22px; font-weight: 700; }
+    .actions .hu { background: #c0392b; }
+    .log { max-height: 130px; overflow-y: auto; font-size: 12px; color: #9fd0b2; font-family: monospace; }
+    .lines { font-size: 13px; }
+    .lines .l { display: flex; justify-content: space-between; border-bottom: 1px dashed #2f5f43; padding: 3px 0; }
+    .lines .l b { color: var(--gold); }
+    .hidden { display: none !important; }
+    .badge { display: inline-block; background: #2c6e45; border-radius: 10px; padding: 2px 10px; font-size: 12px; margin-right: 6px; }
+    .scores { font-size: 14px; }
+    .flex { display: flex; gap: 10px; flex-wrap: wrap; }
+    .flex > div { flex: 1; min-width: 300px; }
+    label.switch { cursor: pointer; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="panel">
+      <h1>雀界 · 广东麻将 <span style="font-size:12px;color:#9fd0b2">H5 调试客户端（E2E 用）</span></h1>
+      <div id="lobby" class="row">
+        <input id="name-input" data-testid="name-input" placeholder="昵称" value="玩家" style="width:90px" />
+        <select id="preset-select" data-testid="preset-select">
+          <option value="gd128">gd128 红中变主流</option>
+          <option value="gd136">gd136 全牌</option>
+          <option value="gd100">gd100 条筒字</option>
+          <option value="gd108">gd108 无字</option>
+        </select>
+        <select id="cap-select" data-testid="cap-select">
+          <option value="fixed3">封顶 3 番</option>
+          <option value="fixed5">封顶 5 番</option>
+          <option value="tiered">分档封顶 3/4/5</option>
+          <option value="formula">动态封顶（杠数）</option>
+          <option value="unlimited">不封顶（hardCap 10）</option>
+        </select>
+        <button id="btn-local" data-testid="btn-local" class="primary">本地单机（PVE）</button>
+        <button id="btn-create" data-testid="btn-create">创建联机房间</button>
+        <input id="join-code" data-testid="join-code" placeholder="房间号" style="width:90px" />
+        <button id="btn-join" data-testid="btn-join">加入房间</button>
+        <label class="switch"><input type="checkbox" id="auto-play" data-testid="auto-play" /> 自动托管本机</label>
+      </div>
+    </div>
+
+    <div id="room-panel" class="panel hidden">
+      <h2>房间 <span id="room-code" data-testid="room-code"></span>
+        <span id="rules-summary" style="font-size:12px;color:#9fd0b2"></span>
+      </h2>
+      <div id="players" class="row" data-testid="players"></div>
+      <div class="row">
+        <button id="btn-ready" data-testid="btn-ready">准备</button>
+        <button id="btn-start-ai" data-testid="btn-start-ai" class="primary">填充 AI 并开始</button>
+        <button id="btn-leave" data-testid="btn-leave" class="danger">离开房间</button>
+        <span id="conn-status" data-testid="conn-status"></span>
+      </div>
+    </div>
+
+    <div id="table-panel" class="panel hidden">
+      <div class="row">
+        <span class="badge" id="wall-count" data-testid="wall-count"></span>
+        <span class="badge" id="dealer-info"></span>
+        <span class="badge scores" id="scores" data-testid="scores"></span>
+        <span class="badge" id="claim-hint" data-testid="claim-hint"></span>
+      </div>
+      <div id="seat-2" class="seat" data-testid="seat-2"></div>
+      <div class="flex">
+        <div id="seat-3" class="seat" data-testid="seat-3"></div>
+        <div id="seat-1" class="seat" data-testid="seat-1"></div>
+      </div>
+      <div id="seat-0" class="seat" data-testid="seat-0"></div>
+      <div class="row actions" id="action-bar" data-testid="action-bar"></div>
+      <div class="flex">
+        <div>
+          <h2>结算明细</h2>
+          <div id="settle" class="lines" data-testid="settle-panel"></div>
+        </div>
+        <div>
+          <h2>对局日志</h2>
+          <div id="log" class="log" data-testid="action-log"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

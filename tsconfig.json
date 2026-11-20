@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/fan-config" },
+    { "path": "packages/mahjong-core" },
+    { "path": "packages/protocol" },
+    { "path": "apps/server" },
+    { "path": "apps/h5-demo" }
+  ]
+}

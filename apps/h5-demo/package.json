@@ -1,0 +1,14 @@
+{
+  "name": "@quejie/h5-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && esbuild src/main.ts --bundle --format=esm --outfile=dist/main.js --log-level=warning"
+  },
+  "dependencies": {
+    "@quejie/fan-config": "*",
+    "@quejie/mahjong-core": "*",
+    "@quejie/protocol": "*"
+  }
+}
