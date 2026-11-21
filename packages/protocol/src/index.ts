@@ -21,6 +21,7 @@ export interface CreateRoomMsg {
   type: 'createRoom';
   config?: FanConfig;
   playerCount?: number;
+  allowDiscardHu?: boolean;
   preset?: string;
   roomLevel?: number;
   scoringMode?: 'max' | 'additive';
@@ -74,11 +75,20 @@ export interface PlayerInfo {
   ai: boolean;
 }
 
+export interface HandScoreRecord {
+  hand: number;
+  outcome: 'win' | 'draw';
+  winnerSeats: Seat[];
+  deltas: number[];
+  scores: number[];
+}
+
 export interface RoomStateMsg {
   type: 'roomState';
   roomCode: string;
   phase: 'lobby' | 'playing' | 'finished';
   players: PlayerInfo[];
+  handHistory?: HandScoreRecord[];
   rulesSummary: {
     presetId: string;
     totalTiles: number;
@@ -86,6 +96,7 @@ export interface RoomStateMsg {
     redCenterMode: string;
     capDesc: string;
     scoringMode: string;
+    allowDiscardHu?: boolean;
   };
 }
 
@@ -110,6 +121,8 @@ export interface SeatView {
   seat: Seat;
   name: string;
   handCount: number;
+  /** 仅在结算快照中公开的手牌 */
+  revealedHand?: string[];
   melds: MeldView[];
   discards: string[];
   connected: boolean;
@@ -131,6 +144,7 @@ export interface GameStateMsg {
   seats: SeatView[];
   /** 自己的手牌（仅本人可见） */
   hand: string[];
+  /** 本人本回合摸到的牌，其他视角为 null */
   drewTile: string | null;
   wallRemaining: number;
   deadWall: number;

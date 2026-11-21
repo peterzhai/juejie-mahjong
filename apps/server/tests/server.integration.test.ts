@@ -96,7 +96,7 @@ describe('服务端健康检查', () => {
 });
 
 describe('房间生命周期与全 AI 对局', () => {
-  it('建房 → AI 填充 → 托管打完整局 → 结算推送', async () => {
+  it('建房后结算并累计两局战绩', async () => {
     const client = new TestClient();
     await client.open();
     client.send({ type: 'hello', name: '托管测试员' });
@@ -116,6 +116,14 @@ describe('房间生命周期与全 AI 对局', () => {
 
     const over = await client.waitFor((m) => is(m, 'gameOver'), 120000, 'gameOver');
     expect(over.type === 'gameOver' && ['win', 'draw'].includes(over.outcome)).toBe(true);
+    const gameStates = client.messages.filter((m) => m.type === 'gameState');
+    for (const state of gameStates.filter((m) => m.phase !== 'over')) {
+      expect(state.seats.every((seat) => seat.revealedHand === undefined)).toBe(true);
+    }
+    const finalState = gameStates.find((m) => m.phase === 'over');
+    expect(finalState?.seats.map((seat) => seat.revealedHand?.length)).toEqual(finalState?.seats.map((seat) => seat.handCount));
+    expect(finalState?.seats[0]?.revealedHand).toEqual(finalState?.hand);
+    expect(finalState?.seats).toHaveLength(4);
     if (over.type === 'gameOver' && over.outcome === 'win') {
       expect(over.settlements.length).toBeGreaterThan(0);
       const s = over.settlements[0]!;
@@ -124,11 +132,25 @@ describe('房间生命周期与全 AI 对局', () => {
       expect(over.replayMeta).toHaveProperty('resolvedFanConfigHash');
     }
     // 分数一致：deltas 之和 = 分数变化
-    if (over.type === 'gameOver') {
-      expect(over.scores.reduce((a, b) => a + b, 0)).toBe(
-        over.deltas.reduce((a, b) => a + b, 0),
-      );
-    }
+    if (over.type !== 'gameOver') throw new Error('缺少首局结算');
+    expect(over.scores).toEqual(over.deltas);
+
+    await client.waitFor(
+      (m) => m.type === 'roomState' && m.phase === 'lobby' && m.handHistory?.length === 1,
+      5000,
+      '首局战绩',
+    );
+    client.send({ type: 'ready' });
+    const next = await client.waitFor(
+      (m) => m.type === 'roomState' && m.phase === 'lobby' && m.handHistory?.length === 2,
+      120000,
+      '两局战绩',
+    );
+    if (next.type !== 'roomState') throw new Error('缺少房间战绩');
+    const [first, second] = next.handHistory!;
+    expect(first).toMatchObject({ hand: 1, outcome: over.outcome, deltas: over.deltas, scores: over.scores });
+    expect(second!.hand).toBe(2);
+    expect(second!.scores).toEqual(first!.scores.map((score, seat) => score + second!.deltas[seat]!));
     client.close();
   }, 180000);
 
@@ -155,6 +177,7 @@ describe('房间生命周期与全 AI 对局', () => {
     const logsRes = await fetch(`http://127.0.0.1:${port}/logs`);
     const logs = await logsRes.text();
     expect(logs).toContain('[拒绝]');
+    expect(logs).not.toContain('合法:');
     client.close();
   }, 60000);
 
@@ -177,7 +200,7 @@ describe('断线重连与双端同步', () => {
     await a.open();
     await b.open();
     a.send({ type: 'hello', name: '甲' });
-    a.send({ type: 'createRoom', preset: 'gd136' });
+    a.send({ type: 'createRoom', preset: 'gd136', allowDiscardHu: false });
     const aWelcome = (await a.waitFor((m) => is(m, 'welcome'), 5000, 'a welcome')) as Extract<
       ServerMessage,
       { type: 'welcome' }
@@ -188,6 +211,7 @@ describe('断线重连与双端同步', () => {
       ServerMessage,
       { type: 'roomState' }
     >;
+    expect(roomState.rulesSummary.allowDiscardHu).toBe(false);
     b.send({ type: 'joinRoom', roomCode: roomState.roomCode });
     const bWelcome = (await b.waitFor((m) => is(m, 'welcome'), 5000, 'b welcome')) as Extract<
       ServerMessage,
@@ -196,11 +220,23 @@ describe('断线重连与双端同步', () => {
     expect(bWelcome.seat).toBe(1);
     b.send({ type: 'ready' });
     a.send({ type: 'startWithAi' });
-    const bStateBefore = (await b.waitFor(
-      (m) => is(m, 'gameState') && m.type === 'gameState' && m.hand.length > 0,
-      30000,
-      'b 手牌',
-    )) as Extract<ServerMessage, { type: 'gameState' }>;
+    const isOpeningState = (m: ServerMessage): m is Extract<ServerMessage, { type: 'gameState' }> =>
+      m.type === 'gameState' && m.phase === 'turn' && m.currentSeat === aWelcome.seat;
+    const [aState, bState] = await Promise.all([
+      a.waitFor(isOpeningState, 5000, '庄家开局'),
+      b.waitFor(isOpeningState, 5000, '闲家开局'),
+    ]);
+    expect(aState).toMatchObject({ viewSeat: aWelcome.seat, drewTile: expect.any(String) });
+    expect(bState).toMatchObject({ viewSeat: bWelcome.seat, drewTile: null });
+    expect(aState.type === 'gameState' && aState.hand.includes(aState.drewTile!)).toBe(true);
+    const drawEvent = await b.waitFor(
+      (m) => m.type === 'gameEvent' && m.event.kind === 'draw',
+      5000,
+      '闲家收到摸牌事件',
+    );
+    expect(drawEvent).toEqual({ type: 'gameEvent', event: { kind: 'draw', seat: aWelcome.seat } });
+    const logs = await fetch(`http://127.0.0.1:${port}/logs`);
+    expect(await logs.text()).not.toContain('seed=');
 
     // 断线
     b.close();

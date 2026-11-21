@@ -229,7 +229,7 @@ export class MahjongGame {
     return tile;
   }
 
-  private handTiles(seat: Seat): TileId[] {
+  handTiles(seat: Seat): TileId[] {
     const p = this.players[seat]!;
     const tiles: TileId[] = [];
     p.hand.forEach((c, i) => {
@@ -445,12 +445,14 @@ export class MahjongGame {
       if (s === fromSeat) continue;
       const p = this.players[s]!;
       const seatOpts: ActionOption[] = [];
-      const w = this.canWinWith(s, tile);
-      const huAllowed =
-        w.win && !p.missLocks.has(tile) && !this.resolved.redCenterDrawOnly &&
-        (kind !== 'robAnkang' ||
-          (w.thirteenOrphans && this.rules.robConcealedKongForThirteenOrphans));
-      if (huAllowed) seatOpts.push({ type: 'hu' });
+      const canClaimHu = (kind !== 'discard' || this.rules.allowDiscardHu !== false) &&
+        !p.missLocks.has(tile) && !this.resolved.redCenterDrawOnly;
+      if (canClaimHu) {
+        const w = this.canWinWith(s, tile);
+        if (w.win && (kind !== 'robAnkang' || (w.thirteenOrphans && this.rules.robConcealedKongForThirteenOrphans))) {
+          seatOpts.push({ type: 'hu' });
+        }
+      }
       if (kind === 'discard') {
         if (p.hand[this.index.idx(tile)]! >= 2 && this.canClaimTile(tile)) {
           seatOpts.push({ type: 'peng', tile });

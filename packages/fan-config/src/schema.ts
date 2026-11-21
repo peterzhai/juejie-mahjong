@@ -106,6 +106,8 @@ export interface KongScoreConfig {
 }
 
 export interface RuleToggles {
+  /** 是否允许胡其他玩家打出的牌；抢杠胡单独判定 */
+  allowDiscardHu?: boolean;
   /** 漏胡锁定（同轮同张不可胡） */
   missedWinLock?: boolean;
   /** 一炮多响 */

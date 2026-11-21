@@ -307,6 +307,9 @@ export function validateFanConfig(config: FanConfig, options: ValidateOptions = 
   if (!isNonNegInt(tileSet.dealerExtraTile) || tileSet.dealerExtraTile > 4) {
     out.errors.push(err('E_DEALER_EXTRA', 'tileSet.dealerExtraTile 必须为 0..4 的整数'));
   }
+  if (config.rules?.allowDiscardHu !== undefined && typeof config.rules.allowDiscardHu !== 'boolean') {
+    out.errors.push(err('E_RULE_DISCARD_HU', 'rules.allowDiscardHu 必须为布尔值'));
+  }
   const fanIdSet = new Set<string>();
   let hasEnabledFallback = false;
   for (const fan of config.fans) {

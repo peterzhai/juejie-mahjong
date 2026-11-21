@@ -16,7 +16,7 @@ import {
   type ReplayData,
   type Seat,
 } from '@quejie/mahjong-core';
-import type { PlayerInfo, RoomStateMsg, GameStateMsg, GameEventMsg, SettlementView } from '@quejie/protocol';
+import type { PlayerInfo, RoomStateMsg, GameStateMsg, GameEventMsg, HandScoreRecord, SettlementView } from '@quejie/protocol';
 
 export interface RoomSession {
   seat: Seat;
@@ -56,6 +56,7 @@ export class Room {
   readonly claimTimeoutMs: number;
   readonly aiDelayMs: number;
   private readonly onEvent: (roomCode: string, message: string) => void;
+  private readonly handHistory: HandScoreRecord[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
@@ -162,7 +163,7 @@ export class Room {
     this.game.start();
     this.phase = 'playing';
     this.handCount++;
-    this.log(`第 ${this.handCount} 局开始（庄家：座位 ${this.dealer}，seed=${seed}）`);
+    this.log(`第 ${this.handCount} 局开始（庄家：座位 ${this.dealer}）`);
     this.broadcastRoomState();
     this.pushStateAll();
     this.broadcastEvent({ kind: 'draw', seat: this.dealer });
@@ -173,7 +174,7 @@ export class Room {
   /** 客户端意图入口：校验归属与合法性 */
   handleAction(seat: Seat, action: PlayerAction): void {
     if (this.phase !== 'playing' || !this.game) {
-      this.log(`[拒绝] 座位 ${seat} 在非对局阶段发送动作 ${JSON.stringify(action)}`);
+      this.log(`[拒绝] 座位 ${seat} 在非对局阶段发送动作`);
       return;
     }
     const legal = this.game.legalOptions(seat);
@@ -181,7 +182,7 @@ export class Room {
       (o) => o.type === action.type && (o.tile === undefined || action.tile === undefined || o.tile === action.tile),
     );
     if (!ok) {
-      this.log(`[拒绝] 座位 ${seat} 非法动作 ${JSON.stringify(action)}（合法: ${JSON.stringify(legal)}）`);
+      this.log(`[拒绝] 座位 ${seat} 发送非法动作`);
       const s = this.sessions[seat];
       s?.send({ type: 'error', code: 'E_ILLEGAL_ACTION', message: `非法动作 ${JSON.stringify(action)}` });
       return;
@@ -208,7 +209,7 @@ export class Room {
       (o) => o.type === action.type && (o.tile === undefined || action.tile === undefined || o.tile === action.tile),
     );
     if (!legalOk) {
-      this.log(`[AI] 座位 ${seat} 决策异常 ${JSON.stringify(action)}，自动过`);
+      this.log(`[AI] 座位 ${seat} 决策异常，自动过`);
       return;
     }
     const eventsBefore = this.game.events.length;
@@ -278,6 +279,13 @@ export class Room {
     this.drainEvents(this.drainedUpTo);
     const result: HandResult = game.result!;
     for (let s = 0; s < this.playerCount; s++) this.scores[s]! += result.deltas[s]!;
+    this.handHistory.push({
+      hand: this.handCount,
+      outcome: result.outcome,
+      winnerSeats: [...result.winnerSeats],
+      deltas: [...result.deltas],
+      scores: [...this.scores],
+    });
     const replay = recordReplay(game, []);
     this.replays.push(replay);
     this.log(
@@ -297,6 +305,7 @@ export class Room {
       chicken: s.chicken,
       lines: s.lines,
     }));
+    this.pushStateAll();
     for (const s of this.sessions) {
       if (s?.connected) {
         s.send({
@@ -385,6 +394,7 @@ export class Room {
       type: 'roomState',
       roomCode: this.code,
       phase: this.phase,
+      handHistory: this.handHistory,
       players: this.sessions.map((s): PlayerInfo => ({
         seat: s?.seat ?? 0,
         name: s?.name ?? '空位',
@@ -399,6 +409,7 @@ export class Room {
         redCenterMode: this.resolved.redCenterMode,
         capDesc: capDescription(this.resolved),
         scoringMode: this.resolved.scoring.mode,
+        allowDiscardHu: this.resolved.rules.allowDiscardHu,
       },
     };
     this.broadcast(msg);
@@ -407,11 +418,6 @@ export class Room {
   /** 个性化对局状态（仅本人手牌） */
   gameStateFor(seat: Seat): GameStateMsg {
     const game = this.game!;
-    const p = game.players[seat]!;
-    const hand: string[] = [];
-    p.hand.forEach((c, i) => {
-      for (let k = 0; k < c; k++) hand.push(game.index.tile(i));
-    });
     return {
       type: 'gameState',
       viewSeat: seat,
@@ -422,20 +428,21 @@ export class Room {
         seat: pp.seat,
         name: this.sessions[pp.seat]?.name ?? `座位${pp.seat}`,
         handCount: pp.hand.reduce((a, b) => a + b, 0),
+        revealedHand: game.phase === 'over' ? game.handTiles(pp.seat) : undefined,
         melds: pp.melds.map((m) => ({ type: m.type, tile: m.tile, fromSeat: m.fromSeat })),
         discards: [...pp.discards],
         connected: this.sessions[pp.seat]?.connected ?? false,
         ai: this.sessions[pp.seat]?.ai ?? false,
       })),
-      hand,
-      drewTile: game.drewTile,
+      hand: game.handTiles(seat),
+      drewTile: game.phase === 'turn' && game.currentSeat === seat ? game.drewTile : null,
       wallRemaining: game.wall.liveRemaining,
       deadWall: game.wall.deadWallCount,
       legalOptions: game.legalOptions(seat),
       claimTile: game.claim?.tile,
       claimFrom: game.claim?.fromSeat,
       scores: this.scores,
-      actionDeadlineMs: game.phase === 'claim' ? this.claimTimeoutMs : this.turnTimeoutMs,
+      actionDeadlineMs: game.phase === 'claim' ? this.claimTimeoutMs : game.phase === 'turn' ? this.turnTimeoutMs : undefined,
     };
   }
 

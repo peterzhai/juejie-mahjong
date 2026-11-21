@@ -73,6 +73,28 @@ function drive(game: MahjongGame, until: () => boolean, maxSteps = 40): void {
 }
 
 describe('点炮胡与结算', () => {
+  it('不点炮关闭弃牌胡，保留对同一张牌的碰与自摸胡', () => {
+    const hands = [
+      ['D1', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'D5', 'D6', 'D7', 'D8'],
+      ['D1', 'D1', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9', 'B2', 'B2'],
+      [], [],
+    ];
+    const normal = setup(gd136, 42, hands);
+    normal.action(0, { type: 'discard', tile: 'D1' });
+    expect(hasOpt(normal, 1, 'hu')).toBe(true);
+
+    const noDiscardHu = { ...gd136, rules: { ...gd136.rules, allowDiscardHu: false } };
+    const game = setup(noDiscardHu, 42, hands);
+    game.action(0, { type: 'discard', tile: 'D1' });
+    expect(hasOpt(game, 1, 'hu')).toBe(false);
+    expect(hasOpt(game, 1, 'peng', 'D1')).toBe(true);
+    expect(() => game.action(1, { type: 'hu' })).toThrow(IllegalActionError);
+
+    const selfDraw = setup(noDiscardHu, 42, [hands[0]!, [...hands[1]!, 'D1'], [], []], undefined, 1);
+    selfDraw.drewTile = 'D1';
+    expect(hasOpt(selfDraw, 1, 'hu')).toBe(true);
+  });
+
   it('庄家打 D1，闲家胡（鸡胡 0 番），点炮者付 1 分，下家坐庄', () => {
     const game = setup(gd136, 42, [
       ['D1', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'D5', 'D6', 'D7', 'D8'],

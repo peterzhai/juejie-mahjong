@@ -1,10 +1,10 @@
-import { tileImages } from './tile-images.js';
+import { tilePhotoPositions } from './tile-images.js';
 /**
  * 雀界·广东麻将 H5 调试客户端（联机 + 本地 PVE 双模式）
  * DOM 渲染，data-testid 锚点供端到端自动化使用。
  */
 
-import type { ClientMessage, ServerMessage, Seat } from '@quejie/protocol';
+import type { ClientMessage, HandScoreRecord, ServerMessage, Seat } from '@quejie/protocol';
 import {
   MahjongGame,
   aiDecide,
@@ -15,10 +15,12 @@ import { defaultFanConfig, TILE_SET_PRESETS, clonePreset, autoDisableUnmetFans, 
 
 // —— 模式与状态 ——
 let ws: WebSocket | null = null;
-let token = '';
 let mySeat: Seat = 0;
 let roomCode = '';
+let handHistory: HandScoreRecord[] = [];
+let roomPlayers: string[] = [];
 let serverState: Extract<ServerMessage, { type: 'gameState' }> | null = null;
+let lastDiscard: { seat: number; tile: string } | null = null;
 let selectedTile: string | null = null;
 let local: {
   game: MahjongGame;
@@ -29,6 +31,12 @@ let local: {
 
 const $ = (id: string): HTMLElement => document.getElementById(id)!;
 const autoPlayBox = $('auto-play') as HTMLInputElement;
+const settlementDialog = $('settlement-dialog') as HTMLDialogElement;
+const logsDialog = $('logs-dialog') as HTMLDialogElement;
+const historyDialog = $('history-dialog') as HTMLDialogElement;
+const settingsDialog = $('settings-dialog') as HTMLDialogElement;
+const leaveDialog = $('leave-dialog') as HTMLDialogElement;
+const settlementButton = $('btn-settlement') as HTMLButtonElement;
 
 function log(msg: string): void {
   const el = $('log');
@@ -38,13 +46,28 @@ function log(msg: string): void {
   while (el.childElementCount > 200) el.lastElementChild?.remove();
 }
 
-function showPanel(id: string): void {
+let activePanel: 'lobby' | 'room-panel' | 'table-panel' = 'lobby';
+
+function showPanel(id: typeof activePanel, updateHistory = true): void {
   const playing = id === 'table-panel';
+  const changingView = activePanel !== id;
+  activePanel = id;
   document.body.classList.toggle('in-game', playing);
+  $('home-panel').classList.toggle('hidden', id !== 'lobby');
   $('btn-home').classList.toggle('hidden', !playing);
-  if (location.hash !== (playing ? '#game' : '#lobby')) history.pushState(null, '', playing ? '#game' : '#lobby');
+  const homeLabel = local ? '返回大厅' : '返回房间';
+  $('home-label').textContent = homeLabel;
+  $('btn-home').setAttribute('aria-label', homeLabel);
+  const hash = playing ? '#game' : id === 'room-panel' ? '#room' : '#lobby';
+  if (updateHistory && location.hash !== hash) history.pushState(null, '', hash);
   for (const p of ['room-panel', 'table-panel']) {
     $(p).classList.toggle('hidden', p !== id);
+  }
+  if (changingView) {
+    $('game-error').textContent = '';
+    window.scrollTo(0, 0);
+    const title = id === 'lobby' ? 'lobby-title' : playing ? 'table-title' : 'room-title';
+    $(title).focus({ preventScroll: true });
   }
 }
 
@@ -63,58 +86,204 @@ function seatName(seat: number): string {
   return serverState?.seats[seat]?.name ?? `座位${seat}`;
 }
 
+function showError(message: string): void {
+  $(activePanel === 'lobby' ? 'lobby-error' : 'game-error').textContent = message;
+}
+
 // —— 联机 ——
+const lobbyButtons = ['btn-local', 'btn-create', 'btn-join'];
+
+function setRoomPending(pending: boolean): void {
+  for (const id of lobbyButtons) ($(id) as HTMLButtonElement).disabled = pending;
+  $('lobby-status').textContent = pending ? '正在连接并等待房间响应…' : '';
+}
+
+let roomRequestTimer: ReturnType<typeof setTimeout> | undefined;
+let roomRequestTrigger: HTMLElement | null = null;
+
+function finishRoomRequest(): void {
+  clearTimeout(roomRequestTimer);
+  roomRequestTimer = undefined;
+  setRoomPending(false);
+  if (document.activeElement === document.body) roomRequestTrigger?.focus();
+  roomRequestTrigger = null;
+}
+
+async function requestRoom(message: ClientMessage): Promise<void> {
+  if (roomRequestTimer !== undefined) return;
+  showError('');
+  $('conn-status').textContent = '';
+  roomRequestTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  setRoomPending(true);
+  roomRequestTimer = setTimeout(() => {
+    const socket = ws;
+    ws = null;
+    socket?.close();
+    finishRoomRequest();
+    $('conn-status').textContent = '已断开';
+    showError('等待房间响应超时，请重试。');
+  }, 10000);
+  try {
+    await connectWs();
+  } catch {
+    if (roomRequestTimer === undefined) return;
+    finishRoomRequest();
+    showError('无法连接联机服务，可重试或开始单机练习。');
+    return;
+  }
+  local = null;
+  clearTimeout(autoTimer);
+  send({ type: 'hello', name: ($('name-input') as HTMLInputElement).value || '玩家' });
+  send(message);
+}
+
 function connectWs(): Promise<void> {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}`);
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error('ws 连接失败'));
-    ws.onclose = () => {
+    const socket = new WebSocket(`${proto}://${location.host}`);
+    const previous = ws;
+    ws = socket;
+    previous?.close();
+    socket.onopen = () => resolve();
+    socket.onerror = () => reject(new Error('ws 连接失败'));
+    socket.onclose = () => {
+      reject(new Error('ws 已断开'));
+      if (ws !== socket) return;
+      if (roomRequestTimer !== undefined) finishRoomRequest();
       $('conn-status').textContent = '已断开';
+      showError('联机连接已断开。');
       log('WebSocket 断开');
     };
-    ws.onmessage = (ev) => onServerMessage(JSON.parse(String(ev.data)) as ServerMessage);
+    socket.onmessage = (ev) => {
+      if (ws === socket) onServerMessage(JSON.parse(String(ev.data)) as ServerMessage);
+    };
   });
 }
 
 function send(msg: ClientMessage): void {
-  ws?.send(JSON.stringify(msg));
+  if (ws?.readyState === WebSocket.OPEN) {
+    if (activePanel !== 'lobby') showError('');
+    ws.send(JSON.stringify(msg));
+  } else {
+    showError('联机已断开，操作未发送。');
+  }
 }
 
 function onServerMessage(msg: ServerMessage): void {
   switch (msg.type) {
     case 'welcome':
-      token = msg.token;
       mySeat = msg.seat;
       $('conn-status').textContent = `座位 ${msg.seat}`;
       break;
     case 'roomState':
+      if (roomRequestTimer !== undefined) finishRoomRequest();
+      if (roomCode !== msg.roomCode) {
+        serverState = null;
+        handHistory = [];
+      }
       roomCode = msg.roomCode;
+      roomPlayers = msg.players.map((player) => player.name);
+      handHistory = msg.handHistory ?? handHistory;
       $('room-code').textContent = String(msg.roomCode);
       $('rules-summary').textContent =
         `${msg.rulesSummary.presetId}｜${msg.rulesSummary.totalTiles}张｜牌墙${msg.rulesSummary.wallTiles}｜` +
-        `红中:${msg.rulesSummary.redCenterMode}｜${msg.rulesSummary.capDesc}｜${msg.rulesSummary.scoringMode}`;
+        `红中:${msg.rulesSummary.redCenterMode}｜${msg.rulesSummary.capDesc}｜${msg.rulesSummary.scoringMode}｜` +
+        (msg.rulesSummary.allowDiscardHu === false ? '不点炮' : '可点炮');
       renderPlayers(msg.players);
       if (msg.phase === 'playing') showPanel('table-panel');
+      else if (activePanel === 'lobby') showPanel('room-panel');
+      if (historyDialog.open) renderRoomHistory();
       break;
     case 'gameState':
+      if (!serverState || serverState.phase === 'over' || msg.wallRemaining > serverState.wallRemaining) {
+        lastDiscard = null;
+      }
       serverState = msg;
       selectedTile = null;
       renderTable();
       break;
     case 'gameEvent':
+      if (msg.event.kind === 'discard') {
+        lastDiscard = msg.event;
+        highlightLastDiscard();
+      }
       logEventMsg(msg.event);
       break;
     case 'gameOver':
+      recordHand({
+        hand: typeof msg.replayMeta.hands === 'number' ? msg.replayMeta.hands : (handHistory.at(-1)?.hand ?? 0) + 1,
+        outcome: msg.outcome,
+        winnerSeats: msg.settlements.map((settlement) => settlement.winnerSeat),
+        deltas: msg.deltas,
+        scores: msg.scores,
+      });
+      if (serverState && serverState.phase !== 'over') {
+        serverState = { ...serverState, phase: 'over', drewTile: null, legalOptions: [], scores: msg.scores };
+        selectedTile = null;
+        renderTable();
+      }
       renderSettle(msg.settlements, msg.outcome, msg.scores);
       log(`对局结束：${msg.outcome === 'win' ? '胡牌' : '流局'}`);
       break;
     case 'error':
       log(`[错误] ${msg.code}: ${msg.message}`);
+      if (roomRequestTimer !== undefined) finishRoomRequest();
+      showError(msg.message);
       break;
     default:
       break;
+  }
+}
+
+function recordHand(record: HandScoreRecord): void {
+  const index = handHistory.findIndex((hand) => hand.hand === record.hand);
+  if (index < 0) handHistory.push(record);
+  else handHistory[index] = record;
+  if (historyDialog.open) renderRoomHistory();
+}
+
+function renderRoomHistory(): void {
+  const players = roomPlayers.length ? roomPlayers : serverState?.seats.map((seat) => seat.name) ?? [];
+  const totals = handHistory.at(-1)?.scores ?? serverState?.scores ?? [];
+  const container = $('room-history');
+  $('history-title').textContent = local ? '单机战绩' : '房间战绩';
+  $('history-summary').textContent = `${local ? '' : `房间 ${roomCode} · `}已结算 ${handHistory.length} 局`;
+  container.replaceChildren();
+  const table = document.createElement('table');
+  table.className = 'history-table';
+  const heading = table.createTHead().insertRow();
+  for (const label of ['局次', ...players]) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = label;
+    heading.append(cell);
+  }
+  const body = table.createTBody();
+  const total = body.insertRow();
+  total.className = 'history-total';
+  addHistoryRow(total, '累计分', players.map((_, seat) => totals[seat] ?? 0));
+  for (const hand of [...handHistory].reverse()) {
+    const result = hand.outcome === 'draw' ? '流局' : hand.winnerSeats.map((seat) => players[seat]).join('、') + ' 胡牌';
+    addHistoryRow(body.insertRow(), `第 ${hand.hand} 局`, hand.deltas, result);
+  }
+  container.appendChild(table);
+  $('history-empty').hidden = handHistory.length > 0;
+}
+
+function addHistoryRow(row: HTMLTableRowElement, name: string, scores: number[], result?: string): void {
+  const heading = document.createElement('th');
+  heading.scope = 'row';
+  heading.textContent = name;
+  if (result) {
+    const detail = document.createElement('small');
+    detail.textContent = result;
+    heading.append(detail);
+  }
+  row.append(heading);
+  for (const score of scores) {
+    const cell = row.insertCell();
+    cell.textContent = score > 0 ? `+${score}` : String(score);
+    if (score !== 0) cell.className = score > 0 ? 'gain' : 'loss';
   }
 }
 
@@ -146,13 +315,14 @@ function renderPlayers(players: { seat: number; name: string; ai: boolean; ready
   }
 }
 
-const SEAT_COLORS = ['#d94f3d', '#3d7dd9', '#e8a13c', '#8a5fd0'];
+const SEAT_COLORS = ['#a34035', '#315d9a', '#915c24', '#684485'];
 
 function avatarEl(seat: number, name: string, size = 34): HTMLElement {
   const el = document.createElement('span');
   el.className = 'avatar';
-  el.style.width = el.style.height = `${size}px`;
-  el.style.fontSize = `${Math.round(size * 0.48)}px`;
+  el.setAttribute('aria-hidden', 'true');
+  el.style.setProperty('--avatar-size', `${size}px`);
+  el.style.setProperty('--avatar-font-size', `${Math.round(size * 0.48)}px`);
   el.style.background = `linear-gradient(160deg, ${SEAT_COLORS[seat % 4]}, ${SEAT_COLORS[seat % 4]}88)`;
   el.textContent = (name || '玩家')[0] ?? '牌';
   return el;
@@ -173,62 +343,132 @@ function sortTiles(ids: string[]): string[] {
   return [...ids].sort((a, b) => key(a) - key(b));
 }
 
-function tileEl(tile: string, small: boolean, onClick?: () => void): HTMLElement {
-  const el = document.createElement('span');
+function tileEl(tile: string, small: false): HTMLButtonElement;
+function tileEl(tile: string, small: true): HTMLSpanElement;
+function tileEl(tile: string, small: boolean): HTMLElement {
+  const el = document.createElement(small ? 'span' : 'button');
   el.className = `tile${small ? ' small' : ''}`;
-  const artwork = tileImages[tile];
-  if (artwork) {
-    const img = document.createElement('img');
-    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(artwork)}`;
-    img.alt = tileLabel(tile);
-    img.draggable = false;
-    el.appendChild(img);
-  } else el.textContent = tileLabel(tile);
-  el.title = tileLabel(tile);
+  const label = tileLabel(tile);
+  const photoPosition = tilePhotoPositions.get(tile);
+  if (photoPosition) {
+    el.classList.add('photo');
+    el.style.backgroundPosition = photoPosition;
+    if (small) el.setAttribute('role', 'img');
+    el.setAttribute('aria-label', label);
+  } else {
+    el.textContent = label;
+  }
+  el.title = label;
   el.dataset.testid = small ? `tile-sm-${tile}` : `hand-tile-${tile}`;
   el.dataset.tile = tile;
-  if (onClick) el.onclick = onClick;
   return el;
 }
 
-function tileBackEl(small: boolean): HTMLElement {
+function tileBackEl(): HTMLElement {
   const el = document.createElement('span');
-  el.className = `tile back${small ? ' small' : ''}`;
+  el.className = 'tile small photo back';
+  el.style.backgroundPosition = tilePhotoPositions.get('back')!;
+  el.setAttribute('aria-hidden', 'true');
   return el;
+}
+
+function tableTile(tile: string | null): HTMLElement {
+  const slot = document.createElement('span');
+  slot.className = 'tile-slot';
+  slot.appendChild(tile === null ? tileBackEl() : tileEl(tile, true));
+  return slot;
+}
+
+const turnDial = $('turn-dial');
+const turnNeedle = $('turn-needle');
+const tablePanel = $('table-panel');
+
+function pointToCurrentSeat(): void {
+  const seatEl = tablePanel.querySelector('.seat.current');
+  const dialBounds = turnDial.getBoundingClientRect();
+  turnNeedle.hidden = !seatEl || dialBounds.width === 0;
+  if (!seatEl || turnNeedle.hidden) return;
+
+  const seatBounds = seatEl.getBoundingClientRect();
+  const dx = seatBounds.left + seatBounds.width / 2 - (dialBounds.left + dialBounds.width / 2);
+  const dy = seatBounds.top + seatBounds.height / 2 - (dialBounds.top + dialBounds.height / 2);
+  turnNeedle.style.setProperty('--turn-angle', `${Math.atan2(dx, -dy)}rad`);
+}
+
+new ResizeObserver(pointToCurrentSeat).observe(tablePanel);
+$('playfield').addEventListener('scroll', pointToCurrentSeat, { capture: true, passive: true });
+window.addEventListener('resize', pointToCurrentSeat);
+function updateHandSelection(preferred?: HTMLButtonElement): void {
+  const tiles = Array.from(tablePanel.querySelectorAll<HTMLButtonElement>('button.tile'));
+  const selectedTileButton = preferred ?? tiles.find((tile) => !tile.disabled && tile.dataset.tile === selectedTile);
+  for (const tile of tiles) {
+    const selected = tile === selectedTileButton;
+    tile.classList.toggle('sel', selected);
+    if (!tile.disabled) tile.setAttribute('aria-pressed', String(selected));
+  }
+}
+
+function highlightLastDiscard(): void {
+  tablePanel.querySelector('.tile.last')?.classList.remove('last');
+  if (!lastDiscard) return;
+  const river = tablePanel.querySelector(`[data-testid="river-${lastDiscard.seat}"]`);
+  const newest = river?.querySelector<HTMLElement>('.discard-line:last-child .tile-slot:last-child .tile');
+  if (newest?.dataset.tile === lastDiscard.tile) newest.classList.add('last');
 }
 
 /** 统一渲染牌桌（联机/本地共用 serverState 快照） */
 function renderTable(): void {
   if (!serverState) return;
+  const active = document.activeElement as HTMLElement | null;
+  const focusKey = active && tablePanel.contains(active) ? active.dataset.focusKey : undefined;
   const st = serverState;
-  $('wall-count').textContent = `牌墙 ${st.wallRemaining - st.deadWall} / ${st.wallRemaining}（死墙 ${st.deadWall}）`;
-  $('dealer-info').textContent = `庄家：座位 ${st.dealer}｜本局`;
-  $('scores').textContent = `分数 ${st.scores.map((s, i) => `${seatName(i)}:${s}`).join('　')}`;
+  settlementButton.disabled = st.phase !== 'over';
+  if (settlementButton.disabled && settlementDialog.open) settlementDialog.close();
+  $('live-wall-count').textContent = `牌墙 ${st.wallRemaining} 张`;
+  $('dead-wall').textContent = ` · 死墙 ${st.deadWall}`;
+  $('dial-count').textContent = String(Math.max(0, st.wallRemaining - st.deadWall));
+  $('dealer-info').textContent = `庄家 · ${seatName(st.dealer)}`;
+  const scores = st.scores.map((score, seat) => `${seatName(seat)} ${score}`).join(' / ');
+  $('score-values').textContent = ` · ${scores}`;
+  $('scores').title = `战绩 · ${scores}`;
   const hint = $('claim-hint');
+  let instruction = '';
   if (st.phase === 'claim') {
-    hint.textContent = `等待响应 ${tileLabel(st.claimTile ?? '')}（碰 / 杠 / 胡 / 过）`;
-    hint.className = 'claim-banner';
-  } else {
-    hint.textContent = '';
-    hint.className = '';
+    instruction = `${st.legalOptions.length ? '请选择响应' : '等待其他玩家响应'} · ${tileLabel(st.claimTile ?? '')}`;
+  } else if (st.phase === 'turn' && st.currentSeat === st.viewSeat) {
+    instruction = ($('single-click') as HTMLInputElement).checked
+      ? '点选手牌即可出牌'
+      : '选一张手牌，再点一次或按「出牌」';
   }
-  $('center-info').innerHTML =
-    `轮到 <b>${seatName(st.currentSeat)}</b> ${st.phase === 'claim' ? '等待宣告' : st.phase === 'turn' ? '出牌' : st.phase === 'over' ? '' : ''}<br>` +
-    `阶段：${st.phase}｜剩余手牌 ${st.hand.length} 张`;
+  if (hint.textContent !== instruction) hint.textContent = instruction;
+  const turnInfo = document.createElement('div');
+  if (st.phase === 'turn') {
+    const currentPlayer = document.createElement('b');
+    currentPlayer.textContent = seatName(st.currentSeat);
+    turnInfo.append('轮到 ', currentPlayer, ' 出牌');
+  } else if (st.phase === 'claim' && st.claimTile) {
+    turnInfo.textContent = `${tileLabel(st.claimTile)} · 响应中`;
+  } else {
+    turnInfo.textContent = st.phase === 'over' ? '本局结束' : '等待宣告';
+  }
+  const centerInfo = $('center-info');
+  if (centerInfo.textContent !== turnInfo.textContent) centerInfo.replaceChildren(turnInfo);
 
   const count = st.seats.length;
   const positions = count === 2 ? [0, 2] : count === 3 ? [0, 1, 3] : [0, 1, 2, 3];
   for (let position = 0; position < 4; position++) {
     const seatEl = $(`seat-${position}`);
     seatEl.replaceChildren();
+    $(`discard-${position}`).replaceChildren();
     seatEl.classList.remove('current');
     seatEl.classList.toggle('hidden', !positions.includes(position));
   }
   for (let offset = 0; offset < count; offset++) {
     const s = (st.viewSeat + offset) % count;
-    const seatEl = $(`seat-${positions[offset]}`);
+    const position = positions[offset];
+    const seatEl = $(`seat-${position}`);
     seatEl.dataset.seat = String(s);
-    const isTurn = s === st.currentSeat && st.phase !== 'over';
+    const isTurn = s === st.currentSeat && st.phase === 'turn';
     seatEl.classList.toggle('current', isTurn);
     const seat = st.seats[s]!;
     const isMe = s === st.viewSeat;
@@ -240,6 +480,7 @@ function renderTable(): void {
     const nameEl = document.createElement('div');
     nameEl.className = 'name';
     nameEl.textContent = `${isMe ? '★ ' : ''}${seat.name}`;
+    nameEl.title = seat.name;
     if (s === st.dealer) {
       const tag = document.createElement('span');
       tag.className = 'dealer-tag';
@@ -248,7 +489,7 @@ function renderTable(): void {
     }
     const subEl = document.createElement('div');
     subEl.className = 'sub';
-    subEl.textContent = `${seat.ai ? 'AI · ' : ''}手牌 ${seat.handCount} 张${seat.connected ? '' : ' · 断线'}`;
+    subEl.textContent = `${seat.handCount} 张${seat.connected || seat.ai ? '' : ' · 断线'}`;
     nameWrap.appendChild(nameEl);
     nameWrap.appendChild(subEl);
     head.appendChild(nameWrap);
@@ -258,11 +499,15 @@ function renderTable(): void {
       const melds = document.createElement('div');
       melds.className = 'melds';
       for (const m of seat.melds) {
+        const group = document.createElement('div');
+        group.className = 'meld-group';
         const tag = document.createElement('span');
         tag.className = 'meld-tag';
         tag.textContent = m.type === 'peng' ? '碰' : m.type === 'ankang' ? '暗杠' : m.type === 'bugang' ? '补杠' : '明杠';
-        melds.appendChild(tag);
-        melds.appendChild(tileEl(m.tile, true));
+        group.appendChild(tag);
+        const hidden = m.type === 'ankang' && !isMe && st.phase !== 'over';
+        for (let i = 0; i < (m.type === 'peng' ? 3 : 4); i++) group.appendChild(tableTile(hidden ? null : m.tile));
+        melds.appendChild(group);
       }
       seatEl.appendChild(melds);
     }
@@ -270,55 +515,80 @@ function renderTable(): void {
     const river = document.createElement('div');
     river.className = 'river';
     river.dataset.testid = `river-${s}`;
-    let lastTile: HTMLElement | null = null;
-    for (const t of seat.discards) {
-      lastTile = tileEl(t, true);
-      river.appendChild(lastTile);
+    for (let index = 0; index < seat.discards.length; index += 5) {
+      const line = document.createElement('div');
+      line.className = 'discard-line';
+      for (const tile of seat.discards.slice(index, index + 5)) line.appendChild(tableTile(tile));
+      river.appendChild(line);
     }
-    lastTile?.classList.add('last');
-    seatEl.appendChild(river);
+    $(`discard-${position}`).appendChild(river);
+    river.scrollLeft = position === 3 ? -river.scrollWidth : river.scrollWidth;
+    river.scrollTop = position === 2 ? -river.scrollHeight : position === 1 ? 0 : river.scrollHeight;
 
     if (isMe) {
       const handWrap = document.createElement('div');
       handWrap.className = 'hand-row';
       const hand = document.createElement('span');
       hand.dataset.testid = 'hand';
-      for (const t of sortTiles(st.hand)) hand.appendChild(tileEl(t, false, () => onHandTileClick(t)));
+      const discardable = new Set(st.legalOptions.filter((option) => option.type === 'discard').map((option) => option.tile));
+      const seen = new Map<string, number>();
+      for (const t of sortTiles(st.hand)) {
+        const tile = tileEl(t, false);
+        const occurrence = seen.get(t) ?? 0;
+        seen.set(t, occurrence + 1);
+        tile.type = 'button';
+        tile.disabled = !isTurn || !discardable.has(t);
+        tile.dataset.focusKey = `tile-${t}-${occurrence}`;
+        tile.onclick = () => onHandTileClick(t, tile);
+        hand.appendChild(tile);
+      }
       handWrap.appendChild(hand);
-      if (st.drewTile && st.phase === 'turn') {
+      if (isTurn && st.drewTile) {
         const drawn = document.createElement('span');
         drawn.className = 'drawn-mark';
         drawn.textContent = `摸牌 ${tileLabel(st.drewTile)}`;
-        handWrap.appendChild(drawn);
+        nameWrap.appendChild(drawn);
       }
       seatEl.appendChild(handWrap);
     } else if (seat.handCount > 0) {
       const backs = document.createElement('div');
-      backs.className = 'river';
-      backs.style.marginTop = '6px';
+      backs.className = 'river opponent-hand';
       backs.dataset.testid = `opp-hand-${s}`;
-      for (let i = 0; i < seat.handCount; i++) backs.appendChild(tileBackEl(true));
+      if (st.phase === 'over' && seat.revealedHand) {
+        backs.classList.add('revealed');
+        for (const tile of sortTiles(seat.revealedHand)) backs.appendChild(tableTile(tile));
+      } else {
+        for (let i = 0; i < seat.handCount; i++) backs.appendChild(tableTile(null));
+      }
       seatEl.appendChild(backs);
     }
   }
+  highlightLastDiscard();
+  updateHandSelection();
+  pointToCurrentSeat();
   renderActions();
+  if (focusKey && !active?.isConnected) {
+    const replacement = Array.from(tablePanel.querySelectorAll<HTMLButtonElement>('button[data-focus-key]:enabled'))
+      .find((button) => button.dataset.focusKey === focusKey);
+    (replacement ?? $('table-title')).focus({ preventScroll: true });
+  }
   if (autoPlayBox.checked) autoAct();
 }
 
-function onHandTileClick(tile: string): void {
+function onHandTileClick(tile: string, button: HTMLButtonElement): void {
   if (!serverState) return;
   const st = serverState;
   if (st.phase !== 'turn' || st.currentSeat !== st.viewSeat) return;
   const canDiscard = st.legalOptions.some((o) => o.type === 'discard' && o.tile === tile);
   if (!canDiscard) return;
   if (selectedTile === tile || ($('single-click') as HTMLInputElement).checked) {
-    doAction({ type: 'discard', tile });
     selectedTile = null;
+    updateHandSelection();
+    doAction({ type: 'discard', tile });
   } else {
     selectedTile = tile;
-    renderTable();
-    const el = document.querySelector(`[data-testid="hand-tile-${tile}"]`) as HTMLElement | null;
-    el?.classList.add('sel');
+    updateHandSelection(button);
+    renderActions();
   }
 }
 
@@ -347,6 +617,7 @@ function renderActions(): void {
   const addBtn = (testid: string, text: string, cls: string, onClick: () => void): void => {
     const b = document.createElement('button');
     b.dataset.testid = testid;
+    b.dataset.focusKey = `${testid}:${text}`;
     b.textContent = text;
     b.className = cls;
     b.onclick = onClick;
@@ -355,21 +626,23 @@ function renderActions(): void {
   const myTurn = st.phase === 'turn' && st.currentSeat === st.viewSeat && !(local && local.game.result);
   if (myTurn) {
     const hu = st.legalOptions.find((o) => o.type === 'hu');
-    if (hu) addBtn('btn-hu', '胡牌！', 'hu', () => doAction({ type: 'hu' }));
+    if (hu) addBtn('btn-hu', '胡牌', 'primary', () => doAction({ type: 'hu' }));
     for (const o of st.legalOptions) {
       if (o.type === 'ankang') addBtn('btn-ankang', `暗杠 ${tileLabel(o.tile!)}`, '', () => doAction({ type: 'ankang', tile: o.tile }));
       if (o.type === 'bugang') addBtn('btn-bugang', `补杠 ${tileLabel(o.tile!)}`, '', () => doAction({ type: 'bugang', tile: o.tile }));
     }
-    if (selectedTile) {
-      addBtn('btn-discard', `出牌 ${tileLabel(selectedTile)}`, 'primary', () => {
-        doAction({ type: 'discard', tile: selectedTile! });
+    const tile = selectedTile;
+    if (tile) {
+      addBtn('btn-discard', `出牌 ${tileLabel(tile)}`, 'primary', () => {
         selectedTile = null;
+        updateHandSelection();
+        doAction({ type: 'discard', tile });
       });
     }
   }
   if (st.phase === 'claim' && st.legalOptions.length > 0) {
     const has = (t: string) => st.legalOptions.some((o) => o.type === t);
-    if (has('hu')) addBtn('btn-hu', '胡！', 'hu', () => doAction({ type: 'hu' }));
+    if (has('hu')) addBtn('btn-hu', '胡牌', 'primary', () => doAction({ type: 'hu' }));
     if (has('peng')) addBtn('btn-peng', '碰', '', () => doAction({ type: 'peng' }));
     if (has('mingang')) addBtn('btn-mingang', '明杠', '', () => doAction({ type: 'mingang' }));
     addBtn('btn-pass', '过', '', () => doAction({ type: 'pass' }));
@@ -410,7 +683,7 @@ interface SettleView {
   baoReasons: string[];
 }
 
-function renderSettle(settlements: SettleView[], outcome: string, scores: number[]): void {
+function renderSettle(settlements: SettleView[], outcome: 'win' | 'draw', scores: number[]): void {
   const el = $('settle');
   el.innerHTML = '';
   const head = document.createElement('div');
@@ -419,7 +692,7 @@ function renderSettle(settlements: SettleView[], outcome: string, scores: number
   el.appendChild(head);
   for (const s of settlements) {
     const seatLine = document.createElement('div');
-    seatLine.style.fontWeight = '700';
+    seatLine.className = 'settle-winner';
     seatLine.dataset.testid = 'settle-winner';
     seatLine.textContent =
       `${seatName(s.winnerSeat)} 胡牌｜${s.paymentKind === 'bao' ? `包三家（${s.baoReasons.join(';')}）` : s.paymentKind === 'selfDraw' ? '自摸' : '点炮'}｜${s.score} 分`;
@@ -428,14 +701,39 @@ function renderSettle(settlements: SettleView[], outcome: string, scores: number
       const line = document.createElement('div');
       line.className = 'l';
       line.dataset.testid = `settle-line-${l.key}`;
-      line.innerHTML = `<span>${l.label}</span><b>${l.detail}</b>`;
+      const label = document.createElement('span');
+      label.textContent = l.label;
+      const detail = document.createElement('b');
+      detail.textContent = l.detail;
+      line.append(label, detail);
       el.appendChild(line);
     }
   }
   const total = document.createElement('div');
-  total.style.marginTop = '6px';
+  total.className = 'settle-total';
   total.textContent = `累计分数：${scores.map((v, i) => `${seatName(i)}:${v}`).join('　')}`;
   el.appendChild(total);
+  if (serverState?.seats.some((seat) => seat.revealedHand)) {
+    const hands = document.createElement('section');
+    hands.className = 'settlement-hands';
+    const heading = document.createElement('h2');
+    heading.textContent = '本局手牌';
+    hands.appendChild(heading);
+    for (const seat of serverState.seats) {
+      if (!seat.revealedHand) continue;
+      const name = document.createElement('h3');
+      name.textContent = seat.name;
+      const tiles = document.createElement('div');
+      tiles.className = 'river';
+      for (const tile of sortTiles(seat.revealedHand)) tiles.appendChild(tileEl(tile, true));
+      hands.append(name, tiles);
+    }
+    el.appendChild(hands);
+  }
+  settlementDialog.scrollTop = 0;
+  if (outcome === 'win' && !tablePanel.classList.contains('hidden') && !settlementDialog.open) {
+    settlementDialog.showModal();
+  }
 }
 
 // —— 本地 PVE ——
@@ -449,6 +747,7 @@ function buildLocalConfig(preset: string, capMode: string): { resolved: Resolved
   cfg.tileSet.redCenterMode = ($("red-mode") as HTMLSelectElement).value as "wild" | "normal" | "off";
   if (cfg.tileSet.redCenterMode !== "off") cfg.tileSet.honors.red = { enabled: true, copies: 4 };
   cfg.tileSet.redCenterDrawOnly = ($("draw-only") as HTMLInputElement).checked;
+  cfg.rules = { ...cfg.rules, allowDiscardHu: !($('no-discard-hu') as HTMLInputElement).checked };
   for (const fan of [...cfg.fans, ...cfg.bonusFans]) {
     fan.value = Number(($("fan-" + fan.id) as HTMLInputElement).value);
     fan.enabled = ($("enabled-" + fan.id) as HTMLInputElement).checked;
@@ -465,13 +764,18 @@ function buildLocalConfig(preset: string, capMode: string): { resolved: Resolved
     cfg.scoring.cap.value = { type: 'fixed', fixed: cap.capFixed ?? 3 };
   }
   let finalConfig = autoDisableUnmetFans(cfg).config;
+  const text = ($('full-config') as HTMLTextAreaElement).value.trim();
   try {
-    const text = ($('full-config') as HTMLTextAreaElement).value.trim();
     if (text) finalConfig = JSON.parse(text) as FanConfig;
   } catch { return { resolved: null, errors: '完整配置 JSON 格式错误' }; }
-  lastConfig = finalConfig;
-  const r = resolveFanConfig(finalConfig);
-  return { resolved: r.resolved ?? null, errors: r.errors.map((e) => e.message).join('; ') };
+  try {
+    const result = resolveFanConfig(finalConfig);
+    lastConfig = finalConfig;
+    return { resolved: result.resolved ?? null, errors: result.errors.map((error) => error.message).join('；') };
+  } catch (error) {
+    if (!text) throw error;
+    return { resolved: null, errors: '完整规则配置缺少必要字段，或字段类型有误。' };
+  }
 }
 
 function startLocal(): void {
@@ -480,9 +784,13 @@ function startLocal(): void {
   const capMode = ($('cap-select') as HTMLSelectElement).value;
   const { resolved, errors } = buildLocalConfig(preset, capMode);
   if (!resolved) {
-    alert(`配置错误: ${errors}`);
+    showError(`规则配置有误。 ${errors}`);
     return;
   }
+  const previous = ws;
+  ws = null;
+  previous?.close();
+  $('conn-status').textContent = '';
   const seed = Date.now() & 0x7fffffff;
   local = {
     game: new MahjongGame({
@@ -499,11 +807,15 @@ function startLocal(): void {
     rngSeed: seed + 1,
   };
   local.game.start();
+  lastDiscard = null;
   roomCode = '本地单机';
+  roomPlayers = local.game.players.map((player) => player.name);
+  handHistory = [];
   $('room-code').textContent = '本地单机';
   const cap = resolved.scoring.cap;
   $('rules-summary').textContent =
-    `${preset}｜${resolved.tileMath.totalTiles}张｜红中:${resolved.redCenterMode}｜${!cap.enabled ? '不封顶' : cap.value.type === 'fixed' ? `封顶 ${cap.value.fixed} 番` : `封顶(${cap.value.type})`}`;
+    `${preset}｜${resolved.tileMath.totalTiles}张｜红中:${resolved.redCenterMode}｜${resolved.rules.allowDiscardHu ? '可点炮' : '不点炮'}｜` +
+    `${!cap.enabled ? '不封顶' : cap.value.type === 'fixed' ? `封顶 ${cap.value.fixed} 番` : `封顶(${cap.value.type})`}`;
   showPanel('table-panel');
   renderLocal();
   driveLocalAi();
@@ -512,10 +824,6 @@ function startLocal(): void {
 /** 将本地引擎状态投影为 serverState 快照并渲染 */
 function renderLocal(): void {
   const game = local!.game;
-  const hand: string[] = [];
-  game.players[0]!.hand.forEach((c, i) => {
-    for (let k = 0; k < c; k++) hand.push(game.index.tile(i));
-  });
   serverState = {
     type: 'gameState',
     viewSeat: 0,
@@ -526,13 +834,14 @@ function renderLocal(): void {
       seat: p.seat,
       name: p.name,
       handCount: p.hand.reduce((a, b) => a + b, 0),
+      revealedHand: game.phase === 'over' ? game.handTiles(p.seat) : undefined,
       melds: p.melds.map((m) => ({ type: m.type, tile: m.tile, fromSeat: m.fromSeat })),
       discards: [...p.discards],
       connected: true,
       ai: p.seat !== 0,
     })),
-    hand,
-    drewTile: game.drewTile,
+    hand: game.handTiles(0),
+    drewTile: game.phase === 'turn' && game.currentSeat === 0 ? game.drewTile : null,
     wallRemaining: game.wall.liveRemaining,
     deadWall: game.wall.deadWallCount,
     legalOptions: game.legalOptions(0),
@@ -547,7 +856,10 @@ function logLocalEvents(from: number): void {
   const game = local!.game;
   for (let i = from; i < game.events.length; i++) {
     const e = game.events[i]!;
-    if (e.type === 'discard') log(`${game.players[e.seat]!.name} 打出 ${tileLabel(e.tile)}`);
+    if (e.type === 'discard') {
+      lastDiscard = e;
+      log(`${game.players[e.seat]!.name} 打出 ${tileLabel(e.tile)}`);
+    }
     else if (e.type === 'peng') log(`${game.players[e.seat]!.name} 碰 ${tileLabel(e.tile)}`);
     else if (e.type === 'mingang') log(`${game.players[e.seat]!.name} 明杠 ${tileLabel(e.tile)}`);
     else if (e.type === 'ankang') log(`${game.players[e.seat]!.name} 暗杠`);
@@ -558,7 +870,8 @@ function logLocalEvents(from: number): void {
 }
 
 function driveLocalAi(): void {
-  const game = local!.game;
+  const match = local!;
+  const game = match.game;
   if (game.result) {
     finishLocalHand();
     return;
@@ -580,7 +893,7 @@ function driveLocalAi(): void {
     const seat = pending[0]!;
     if (seat === 0) return; // 等待人类响应
     setTimeout(() => {
-      if (!local || !local.game.claim || local.game.phase !== 'claim') return;
+      if (local !== match || !local.game.claim || local.game.phase !== 'claim') return;
       const g = local.game;
       const before = g.events.length;
       const action = aiDecide(g, seat, { difficulty: 'hard', rng: mulberry32(local.rngSeed++), timeBudgetMs: 60 });
@@ -598,7 +911,7 @@ function driveLocalAi(): void {
   const seat = game.currentSeat;
   if (seat === 0) return; // 等待人类
   setTimeout(() => {
-    if (!local) return;
+    if (local !== match) return;
     const g = local.game;
     if (g.result) {
       finishLocalHand();
@@ -622,37 +935,53 @@ function driveLocalAi(): void {
 }
 
 function finishLocalHand(): void {
+  if (handHistory.length > 0) return;
   const result = local!.game.result!;
   for (let s = 0; s < local!.scores.length; s++) local!.scores[s]! += result.deltas[s]!;
+  recordHand({
+    hand: 1, outcome: result.outcome, winnerSeats: result.winnerSeats,
+    deltas: result.deltas, scores: [...local!.scores],
+  });
   renderLocal();
   renderSettle(result.settlements, result.outcome, local!.scores);
   log(`本地对局结束：${result.outcome === 'win' ? '胡牌' : '流局'}，庄家下一局：座位 ${result.dealerNext}`);
 }
 
 // —— 事件绑定 ——
+$('btn-logs').onclick = () => { logsDialog.showModal(); logsDialog.scrollTop = 0; };
+function openRoomHistory(): void {
+  renderRoomHistory();
+  historyDialog.showModal();
+  historyDialog.scrollTop = 0;
+}
+$('scores').onclick = openRoomHistory;
+$('btn-room-history').onclick = openRoomHistory;
+settlementButton.onclick = () => settlementDialog.showModal();
 $('btn-home').onclick = () => {
   clearTimeout(autoTimer);
   autoPlayBox.checked = false;
-  showPanel('room-panel');
+  showPanel(local || !roomCode ? 'lobby' : 'room-panel');
 };
-window.addEventListener('popstate', () => showPanel(location.hash === '#game' && serverState ? 'table-panel' : 'room-panel'));
+window.addEventListener('popstate', () => {
+  const panel = location.hash === '#game' && serverState ? 'table-panel' :
+    location.hash === '#room' && roomCode && !local ? 'room-panel' : 'lobby';
+  showPanel(panel, false);
+});
 $('btn-local').onclick = () => {
   mySeat = 0;
+  showError('');
   startLocal();
 };
-$('btn-create').onclick = async () => {
-  try {
-    await connectWs();
-  } catch {
-    log('无法连接服务端（本地单机仍可用）');
+$('btn-create').onclick = () => {
+  const preset = ($('preset-select') as HTMLSelectElement).value;
+  const capMode = ($('cap-select') as HTMLSelectElement).value;
+  const checked = buildLocalConfig(preset, capMode);
+  if (!checked.resolved) {
+    showError(checked.errors);
     return;
   }
-  const preset = ($('preset-select') as HTMLSelectElement).value;
-  const checked = buildLocalConfig(preset, ($('cap-select') as HTMLSelectElement).value);
-  if (!checked.resolved) { alert(checked.errors); return; }
-  const cap = capOf(($('cap-select') as HTMLSelectElement).value);
-  send({ type: 'hello', name: ($('name-input') as HTMLInputElement).value || '玩家' });
-  send({
+  const cap = capOf(capMode);
+  void requestRoom({
     type: 'createRoom',
     config: lastConfig,
     playerCount: Number(($('player-count') as HTMLSelectElement).value),
@@ -661,43 +990,42 @@ $('btn-create').onclick = async () => {
     capType: cap.capType as 'fixed' | 'tiered' | 'formula' | 'unlimited' | undefined,
     capFixed: cap.capFixed,
   });
-  showPanel('room-panel');
 };
-$('btn-join').onclick = async () => {
+$('join-form').onsubmit = (event) => {
+  event.preventDefault();
   const code = ($('join-code') as HTMLInputElement).value.trim();
-  if (!code) return;
-  try {
-    await connectWs();
-  } catch {
-    return;
-  }
-  send({ type: 'hello', name: ($('name-input') as HTMLInputElement).value || '玩家' });
-  send({ type: 'joinRoom', roomCode: code });
-  showPanel('room-panel');
+  if (code) void requestRoom({ type: 'joinRoom', roomCode: code });
+  else showError('请输入房间号。');
 };
 $('btn-ready').onclick = () => send({ type: 'ready' });
 $('btn-start-ai').onclick = () => send({ type: 'startWithAi' });
 $('btn-leave').onclick = () => {
-  send({ type: 'leaveRoom' });
-  showPanel('room-panel');
-  $('table-panel').classList.add('hidden');
+  leaveDialog.returnValue = '';
+  leaveDialog.showModal();
 };
-void roomCode;
-void token;
+leaveDialog.addEventListener('close', () => {
+  if (leaveDialog.returnValue !== 'leave') return;
+  send({ type: 'leaveRoom' });
+  const previous = ws;
+  ws = null;
+  previous?.close();
+  roomCode = '';
+  roomPlayers = [];
+  handHistory = [];
+  serverState = null;
+  $('conn-status').textContent = '';
+  showPanel('lobby');
+});
 
 // 设置持久化；存储不可用时仍保留当前会话的设置。
 function aiDelay(): number { return Number(($('ai-delay') as HTMLSelectElement).value) || 600; }
-const advanced = document.createElement('div');
-advanced.innerHTML = `<p>以下高级规则用于本地单机。联机房间暂沿用服务端规则。红中变会在所选牌组中加入四张红中，无红中的方案总张数会增加四张。</p><label>人数<select id="player-count"><option value="2">2 人</option><option value="3">3 人</option><option value="4" selected>4 人</option></select></label><label>红中模式<select id="red-mode"><option value="wild">红中变（万能牌）</option><option value="normal">普通红中</option><option value="off">关闭红中变</option></select></label><label>红中变仅自摸<input type="checkbox" id="draw-only"></label><h2>番型与附加番</h2><p>勾选启用，右侧填写番数；缺少所需牌张的番型将自动禁用。</p>`;
 for (const fan of [...DEFAULT_FANS, ...DEFAULT_BONUS_FANS]) {
-  const row = document.createElement('label');
-  row.innerHTML = `<span><input type="checkbox" id="enabled-${fan.id}" checked> ${fan.name}</span><input id="fan-${fan.id}" aria-label="${fan.name}番数" type="number" min="0" max="64" step="1" value="${fan.value}" style="width:80px">`;
-  advanced.appendChild(row);
+  const row = document.createElement('div');
+  row.className = 'fan-row';
+  row.innerHTML = `<label><input type="checkbox" id="enabled-${fan.id}" checked> ${fan.name}</label><input id="fan-${fan.id}" aria-label="${fan.name}番数" type="number" min="0" max="64" step="1" value="${fan.value}">`;
+  $('fan-list').appendChild(row);
 }
-$('rule-settings').appendChild(advanced);
-const full = document.createElement('details');
-full.innerHTML = `<summary>完整规则配置（高级）</summary><p>完整配置优先于快捷选项。包含牌张数量、七对万能牌、番型、计分方式、底分、封顶范围/分组/突破条件、无红中加成、杠分、漏胡、一炮多响及包牌开关。</p><button type="button" id="load-config">载入当前快捷配置</button><button type="button" id="clear-config">恢复快捷配置</button><textarea id="full-config" aria-label="完整规则 JSON" rows="20" style="width:100%;font-family:monospace"></textarea>`;
-$('rule-settings').appendChild(full);
+const editor = $('config-editor');
 $('load-config').onclick = () => {
   const area = $('full-config') as HTMLTextAreaElement;
   const previous = area.value; area.value = '';
@@ -708,14 +1036,14 @@ $('load-config').onclick = () => {
 };
 $('clear-config').onclick = () => { ($('full-config') as HTMLTextAreaElement).value = ''; editor.replaceChildren(); savePreferences(); };
 // A recursive editor exposes every field of the validated configuration, including arrays.
-const editor = document.createElement('div');
-full.appendChild(editor);
 const names: Record<string, string> = { tileSet:'牌张组成', suits:'数字花色', character:'万', bamboo:'条', dot:'筒', honors:'字牌', flowers:'花牌', copies:'张数', enabled:'启用', scoring:'计分', mode:'模式', baseScore:'底分', cap:'封顶', value:'番数/参数', fixed:'固定番数', hardCap:'安全上限', minFan:'保底番', maxScore:'分数上限', scope:'封顶范围', groups:'分组封顶', bypass:'突破封顶', fanIds:'番型ID', conditions:'条件', redCenterBonus:'无红中加成', addFan:'增加番数', bypassCap:'封顶后加成', onlyWhenWild:'仅万能牌模式', rules:'玩法规则', missedWinLock:'漏胡锁定', multiWinEnabled:'一炮多响', robConcealedKongForThirteenOrphans:'十三幺抢暗杠', baoRobKong:'抢杠包牌', baoKongBlossom:'杠开包牌', baoTwelveExposed:'十二张落地包牌', baoBigDragonWind:'大三元大四喜包牌', kongScores:'杠分', mingangPayerMultiplier:'明杠支付倍数', bugangEach:'补杠各付', ankangEach:'暗杠各付', redCenterMode:'红中模式', redCenterDrawOnly:'仅自摸', sevenPairsWithWild:'七对允许万能牌', dealerExtraTile:'庄家额外牌', fans:'基础番型', bonusFans:'附加番', name:'名称', playerOffsets:'庄闲封顶偏移', dealer:'庄家', nonDealer:'闲家', type:'类型', tiers:'分档番数', formula:'计算公式' };
 function renderConfigEditor(): void {
   editor.replaceChildren();
   const area = $('full-config') as HTMLTextAreaElement;
-  let data: Record<string, unknown>;
-  try { data = JSON.parse(area.value); } catch { return; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(area.value); } catch { return; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+  const data = parsed as Record<string, unknown>;
   const persist = () => { area.value = JSON.stringify(data, null, 2); savePreferences(); };
   function visit(parent: HTMLElement, object: Record<string, unknown>, key: string): void {
     const value = object[key];
@@ -727,26 +1055,19 @@ function renderConfigEditor(): void {
     }
     const row = document.createElement('label'); const title = document.createElement('span'); title.textContent = names[key] || key; row.appendChild(title);
     const input = document.createElement('input'); input.type = typeof value === 'boolean' ? 'checkbox' : typeof value === 'number' ? 'number' : 'text';
-    input.style.width = '55%'; input.checked = value === true; input.value = Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
+    input.checked = value === true; input.value = Array.isArray(value) ? JSON.stringify(value) : String(value ?? '');
     input.onchange = () => { try { object[key] = Array.isArray(value) ? JSON.parse(input.value) : typeof value === 'boolean' ? input.checked : typeof value === 'number' ? Number(input.value) : input.value; input.setCustomValidity(''); persist(); } catch { input.setCustomValidity('请输入有效 JSON 数组'); input.reportValidity(); } };
     row.appendChild(input); parent.appendChild(row);
   }
   for (const key of Object.keys(data)) visit(editor, data, key);
 }
-$('load-config').addEventListener('click', renderConfigEditor);
 $('full-config').addEventListener('change', renderConfigEditor);
-$('clear-config').addEventListener('click', () => editor.replaceChildren());
 const presetSelect = $('preset-select') as HTMLSelectElement;
 presetSelect.replaceChildren();
 for (const [id, preset] of Object.entries(TILE_SET_PRESETS)) {
   const option = document.createElement('option'); option.value = id; option.textContent = `${id} · ${preset.description}`; presetSelect.appendChild(option);
 }
-const preferenceIds = ['full-config', 'name-input', 'preset-select', 'cap-select', 'ai-delay', 'single-click', 'reduce-motion', 'player-count', 'red-mode', 'draw-only', ...[...DEFAULT_FANS, ...DEFAULT_BONUS_FANS].flatMap(f => ['fan-' + f.id, 'enabled-' + f.id])];
-for (const id of ['name-input', 'preset-select', 'cap-select']) {
-  const field = $(id);
-  field.setAttribute('aria-label', id === 'name-input' ? '玩家昵称' : id === 'preset-select' ? '麻将规则' : '封顶番数');
-  $('rule-settings').appendChild(field);
-}
+const preferenceIds = ['full-config', 'name-input', 'preset-select', 'cap-select', 'ai-delay', 'single-click', 'reduce-motion', 'player-count', 'no-discard-hu', 'red-mode', 'draw-only', ...[...DEFAULT_FANS, ...DEFAULT_BONUS_FANS].flatMap(f => ['fan-' + f.id, 'enabled-' + f.id])];
 try {
   const saved = JSON.parse(localStorage.getItem('quejie-settings') || '{}') as Record<string, unknown>;
   for (const id of preferenceIds) {
@@ -764,7 +1085,15 @@ function savePreferences(): void {
   catch { $('settings-status').textContent = '设置仅在当前会话生效'; }
 }
 for (const id of preferenceIds) $(id).addEventListener('change', savePreferences);
-savePreferences();
+document.body.classList.toggle('reduce-motion', ($('reduce-motion') as HTMLInputElement).checked);
 renderConfigEditor();
-$('btn-settings').onclick = () => ($('settings-dialog') as HTMLDialogElement).showModal();
+function openSettings(): void {
+  settingsDialog.showModal();
+  settingsDialog.scrollTop = 0;
+}
+$('btn-settings').onclick = openSettings;
+$('btn-rule-settings').onclick = openSettings;
+settingsDialog.addEventListener('close', () => {
+  if (activePanel === 'table-panel') renderTable();
+});
 autoPlayBox.onchange = () => { if (autoPlayBox.checked) autoAct(); else clearTimeout(autoTimer); };

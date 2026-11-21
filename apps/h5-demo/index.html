@@ -4,334 +4,719 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀界 · 广东麻将</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {
-      --gold: #f0c75e;
-      --gold-d: #b8860b;
-      --panel: rgba(10, 40, 24, .92);
-      --line: #2f6b45;
-      --red: #d94f3d;
-      --blue: #3d7dd9;
+      color-scheme: dark;
+      --canvas: #0d1d19;
+      --surface: #142b24;
+      --raised: #1c382e;
+      --inset: #0e231c;
+      --line: #4b6b5a;
+      --control-line: #739382;
+      --text: #f5f0e5;
+      --muted: #b8cdbf;
+      --gold: #edcc8c;
+      --gold-hover: #ffdfa4;
+      --ink: #242419;
+      --danger: #803932;
+      --danger-hover: #98473b;
+      --error-text: #ffd0c6;
+      --focus: #fff1ad;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --radius-sm: 8px;
+      --radius: 14px;
+      --radius-lg: 22px;
+      --pill: 999px;
+      --shadow: 0 12px 34px #0004;
+      --control: 44px;
+      --fast: 140ms;
+      --font-sm: .8125rem;
+      --font: 1rem;
+      --font-heading: clamp(1.2rem, 2vw, 1.45rem);
+      --screen-width: 100dvw;
+      --screen-height: 100dvh;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
+    * { box-sizing: border-box; }
     body {
-      color: #eee;
-      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
-      background:
-        radial-gradient(1200px 600px at 50% -10%, #1d6b3c 0%, transparent 60%),
-        radial-gradient(900px 500px at 85% 110%, #14532d 0%, transparent 55%),
-        linear-gradient(160deg, #0d3b22 0%, #082a18 55%, #051c10 100%);
-      min-height: 100vh;
+      margin: 0;
+      background: var(--canvas);
+      color: var(--text);
+      font: var(--font)/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     }
-    #app { max-width: 1180px; margin: 0 auto; padding: 12px 16px 24px; }
+    h1, h2, h3, p { margin: 0; }
+    h2 { font-size: var(--font-heading); }
+    a { color: var(--gold); }
+    [hidden], .hidden { display: none !important; }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    #app { max-width: 1280px; margin-inline: auto; padding: 0 clamp(12px, 3vw, 36px) var(--space-5); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden;
+      clip-path: inset(50%); white-space: nowrap;
+    }
 
-    /* —— 顶栏 —— */
+    /* 控件与反馈 */
+    button, input, select, textarea {
+      min-width: 0; max-width: 100%; min-height: var(--control);
+      border: 1px solid var(--control-line); border-radius: var(--radius-sm);
+      background: var(--inset); color: var(--text); font: inherit;
+      padding: var(--space-2) var(--space-3);
+    }
+    button {
+      background: var(--raised); font-weight: 650; cursor: pointer;
+      transition: background-color var(--fast), transform var(--fast);
+    }
+    @media (hover: hover) {
+      button:not(:disabled, .tile):hover { background: #294c40; }
+      button.primary:not(:disabled):hover { background: var(--gold-hover); }
+      button.danger:not(:disabled):hover { background: var(--danger-hover); }
+    }
+    button:not(:disabled, .tile):active { transform: translateY(1px); }
+    button.primary { background: var(--gold); color: var(--ink); border-color: var(--gold); }
+    button.danger { background: var(--danger); border-color: #d7897b; }
+    button:disabled:not(.tile) {
+      background: var(--inset); border-color: var(--line); color: #9aafa4; cursor: default;
+    }
+    input[type="checkbox"] {
+      width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--gold);
+    }
+    label:has(input[type="checkbox"]) { cursor: pointer; }
+    .form-field { display: grid; gap: var(--space-1); min-width: 0; }
+    .form-field > span { color: var(--muted); font-size: var(--font-sm); }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+    .feedback { color: var(--muted); font-size: var(--font-sm); overflow-wrap: anywhere; }
+    .feedback[role="alert"] { color: var(--error-text); }
+    .feedback:not(:empty) {
+      padding: var(--space-2) var(--space-3); background: var(--inset);
+      border-radius: var(--radius-sm); border-inline-start: 2px solid currentColor;
+    }
+    #game-error:not(:empty) { margin-block: var(--space-2); }
+
+    /* 大厅与房间 */
     header.top {
-      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-      padding: 10px 4px 14px;
+      display: flex; justify-content: flex-end; align-items: center; gap: var(--space-2);
+      min-height: 0; padding-block: var(--space-2);
     }
-    .logo {
-      font-size: 24px; font-weight: 800; letter-spacing: 2px; color: var(--gold);
-      text-shadow: 0 2px 0 #7a5a10, 0 4px 10px rgba(0,0,0,.5);
+    .header-actions { display: flex; flex: none; align-items: center; gap: var(--space-1); }
+    header.top button { min-height: 32px; padding: 3px 9px; font-size: var(--font-sm); white-space: nowrap; }
+    body:not(.in-game) :is(.settlement-button, .table-topbar) { display: none; }
+    #conn-status { color: var(--muted); font-size: var(--font-sm); white-space: nowrap; }
+    #conn-status:empty { display: none; }
+    .compact-label { display: none; }
+    #home-panel { max-width: 1080px; margin-inline: auto; }
+    .hero {
+      position: relative; display: grid; align-content: end;
+      min-height: clamp(175px, 27vw, 312px); margin-bottom: var(--space-4);
+      padding: clamp(20px, 4vw, 44px); overflow: hidden; border: 1px solid var(--line);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow);
+      background: linear-gradient(90deg, #081c16 0%, #0c2119e8 24%, #0c21195c 66%, #0b21132b),
+        url('/assets/mahjong-table.webp') center 56% / cover, var(--raised);
     }
-    .logo small { font-size: 12px; color: #9fd0b2; font-weight: 400; letter-spacing: 1px; margin-left: 8px; }
-    .top .spacer { flex: 1; }
-    #conn-status { font-size: 13px; color: #9fd0b2; }
-
-    /* —— 通用面板 —— */
+    .hero-copy { max-width: 390px; }
+    .hero h1 { color: #fff4dc; font-family: 'Songti SC', SimSun, serif; font-size: clamp(2rem, 5vw, 3.7rem); line-height: 1.13; letter-spacing: .08em; font-weight: 750; }
+    .photo-credit {
+      position: absolute; bottom: var(--space-2); right: var(--space-2);
+      color: var(--text); background: #0d1d19ed; padding: var(--space-1) var(--space-2);
+      border-radius: var(--radius-sm); font-size: .75rem;
+    }
     .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 14px 16px;
-      margin-bottom: 12px;
-      box-shadow: 0 6px 18px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: clamp(16px, 3vw, 28px); box-shadow: var(--shadow);
     }
-    h2 { font-size: 15px; color: var(--gold); margin: 4px 0 8px; }
-
-    input, select, button {
-      font-size: 14px; padding: 7px 12px; border-radius: 8px;
-      border: 1px solid #3a7a55; background: #123f28; color: #eee;
-      font-family: inherit;
+    .lobby-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+    #btn-rule-settings { padding-inline: 12px; color: var(--gold); font-size: var(--font-sm); }
+    .lobby-fields {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+      gap: var(--space-3); margin: var(--space-4) 0;
     }
-    input:focus, select:focus { outline: 2px solid #57a773; border-color: #57a773; }
-    button { cursor: pointer; background: linear-gradient(#2f7a4d, #25603a); border-color: #3f8f5c; transition: filter .12s, transform .05s; }
-    button:hover { filter: brightness(1.15); }
-    button:active { transform: translateY(1px); }
-    button:disabled { opacity: .4; cursor: not-allowed; }
-    button.primary { background: linear-gradient(#e6b93f, #b8860b); border-color: #e8c56a; color: #2a1e05; font-weight: 700; }
-    button.danger { background: linear-gradient(#a03c34, #7c2b25); border-color: #c96a5a; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
-    .hidden { display: none !important; }
-    .badge { display: inline-block; background: #1d5c39; border: 1px solid #357a52; border-radius: 999px; padding: 3px 12px; font-size: 12.5px; margin-right: 6px; color: #d8f0e2; }
-    .scores { color: var(--gold); font-weight: 600; }
-    .switch { cursor: pointer; font-size: 13px; color: #cfe8d8; }
-
-    /* —— 大厅 —— */
-    #lobby .ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-
-    /* —— 房间面板 —— */
+    .lobby-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+    .lobby-action {
+      display: grid; align-content: space-between; gap: var(--space-3);
+      padding: var(--space-3); background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius);
+    }
+    .lobby-action h3 { font-size: .95rem; }
+    .lobby-action p { color: var(--muted); font-size: var(--font-sm); margin-top: 2px; }
+    .lobby-action > button { width: 100%; }
+    .lobby-action:has(.primary) { background: linear-gradient(145deg, #52452b55, var(--inset) 80%); border-color: #8a754f; }
+    .lobby-action .row { flex-wrap: nowrap; }
+    #join-code { flex: 1; width: 0; padding-inline: 8px; font-variant-numeric: tabular-nums; }
+    #btn-join { flex: none; padding-inline: 10px; }
+    #lobby-status:not(:empty), #lobby-error:not(:empty) { margin-top: var(--space-2); }
+    #rules-summary { color: var(--muted); margin-block: var(--space-1) var(--space-3); overflow-wrap: anywhere; }
+    #room-code { color: var(--gold); }
+    #players { margin-block: var(--space-4); }
     .player-chip {
-      display: inline-flex; align-items: center; gap: 8px;
-      background: #143d27; border: 1px solid #2f6b45; border-radius: 999px;
-      padding: 5px 14px 5px 6px; font-size: 14px; margin: 4px 6px 4px 0;
+      display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%;
+      background: var(--inset); border: 1px solid var(--line); border-radius: var(--pill);
+      padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1); overflow-wrap: anywhere;
     }
+    .player-chip.me { border-color: var(--gold); }
+    .player-chip .st { color: var(--muted); font-size: var(--font-sm); }
     .avatar {
-      width: 30px; height: 30px; border-radius: 50%; flex: none;
-      display: inline-flex; align-items: center; justify-content: center;
-      font-weight: 700; font-size: 14px; color: #fff;
-      border: 2px solid rgba(255,255,255,.35);
-      text-shadow: 0 1px 2px rgba(0,0,0,.6);
+      border-radius: 50%; flex: none; display: inline-grid; place-items: center;
+      font-weight: 750; color: white; background: var(--inset); border: 1px solid #ffffff65;
+      width: var(--avatar-size); height: var(--avatar-size); font-size: var(--avatar-font-size);
+      text-shadow: 0 1px 3px #000;
     }
-    .player-chip.me { border-color: var(--gold); box-shadow: 0 0 8px rgba(232,197,106,.35); }
-    .player-chip .st { font-size: 11px; color: #9fd0b2; }
 
-    /* —— 牌桌 —— */
+    /* 牌桌 */
+    .in-game #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1510px; }
+    .in-game main, #table-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+    .table-topbar { display: flex; flex: 1; min-width: 0; align-items: center; gap: var(--space-1); }
+    .badge {
+      display: inline-block; border: 1px solid var(--line); border-radius: var(--pill);
+      background: var(--surface); padding: var(--space-1) var(--space-2); font-size: var(--font-sm); white-space: nowrap;
+    }
+    #dealer-info { overflow: hidden; text-overflow: ellipsis; }
+    button.scores { flex: 0 1 auto; min-width: 0; color: var(--gold); text-align: start; overflow: hidden; text-overflow: ellipsis; }
     .table {
-      position: relative;
-      border-radius: 26px;
-      border: 10px solid transparent;
-      background:
-        radial-gradient(ellipse at 50% 42%, #2c8a52 0%, #1e6b3c 55%, #175430 100%);
-      box-shadow:
-        inset 0 0 60px rgba(0,0,0,.45),
-        inset 0 2px 0 rgba(255,255,255,.08),
-        0 10px 30px rgba(0,0,0,.5);
-      padding: 14px 18px 18px;
-      margin-bottom: 12px;
+      --seat-label-width: 124px;
+      --bank-tile-width: 23px; --bank-tile-height: 32px;
+      --discard-tile-width: 22px; --discard-tile-height: 30px;
+      --hand-tile-width: clamp(38px, 4.4vw, 53px);
+      display: grid; flex: 1; grid-template-rows: minmax(0, 1fr) auto; gap: var(--space-3); min-height: 0;
+      border: 5px solid #263c33; border-radius: var(--radius-lg); padding: clamp(8px, 2vw, 24px);
+      background: radial-gradient(ellipse at 50% 42%, #245e51, #133b32 78%);
+      box-shadow: inset 0 0 0 1px #9f8151, inset 0 0 50px #071a16a0, var(--shadow);
     }
-    /* 木质桌沿 */
-    .table::before {
-      content: ""; position: absolute; inset: -10px; border-radius: 30px; z-index: -1;
-      background:
-        repeating-linear-gradient(93deg, #6b4423 0 14px, #7d5130 14px 28px, #5d3a1e 28px 42px);
-      box-shadow: 0 8px 20px rgba(0,0,0,.55), inset 0 0 0 2px #3f2712;
+    .playfield {
+      --bank-tile-width: 18px; --bank-tile-height: 25px;
+      --prompt-height: 58px;
+      min-width: 0; display: grid; gap: var(--space-3);
+      grid-template: "left opposite right" auto "left center right" minmax(0, 1fr) "left prompt right" var(--prompt-height)
+        / minmax(0, 1fr) minmax(0, 3fr) minmax(0, 1fr);
     }
-    .table-topbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-
-    .seat-zone { display: flex; justify-content: center; }
-    .seat-zone.bottom { margin-top: 10px; }
-    .table-mid {
-      display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: start;
+    .seat-zone { display: flex; justify-content: center; min-width: 0; }
+    .seat-zone.opposite { grid-area: opposite; }
+    .seat-zone.bottom { display: grid; grid-template-columns: minmax(0, max-content); }
+    .seat-side, .center-board, .seat { min-width: 0; }
+    .seat-side { display: flex; align-self: center; }
+    .seat-side.left { grid-area: left; }
+    .seat-side.right { grid-area: right; justify-content: flex-end; }
+    .center-board {
+      --river-gap: 2px;
+      grid-area: center; min-height: 0; display: grid; align-items: center;
+      grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) min(50%, calc(5 * var(--discard-tile-width) + 4 * var(--river-gap) + 2 * var(--space-1))) minmax(0, 1fr);
+      gap: var(--space-1) var(--space-2);
     }
-    .seat-side { display: flex; align-items: flex-start; }
-    .seat-side.left { justify-content: flex-start; }
-    .seat-side.right { justify-content: flex-end; }
-    .table-center { min-width: 220px; text-align: center; padding-top: 8px; }
-    .center-info { font-size: 13px; color: #cfe8d8; line-height: 1.9; }
-    .center-info b { color: var(--gold); }
-
-    /* —— 座位 —— */
+    .discard-zone {
+      --bank-tile-width: var(--discard-tile-width);
+      --bank-tile-height: var(--discard-tile-height);
+      display: flex; justify-content: center; min-width: 0; max-height: 100%;
+    }
+    .discard-zone.top { grid-area: 1 / 2; align-self: end; }
+    .discard-zone.bottom { grid-area: 3 / 2; align-self: start; }
+    .discard-zone.left { grid-area: 1 / 1 / -1; justify-content: flex-end; }
+    .discard-zone.right { grid-area: 1 / 3 / -1; justify-content: flex-start; }
+    .discard-zone .river { display: flex; flex-flow: column nowrap; align-items: safe center; gap: var(--river-gap); }
+    .discard-zone.top .river { flex-direction: column-reverse; }
+    .discard-zone.left .river { flex-direction: row-reverse; }
+    .discard-zone.right .river { flex-direction: row; }
+    .discard-line { display: flex; justify-content: center; gap: var(--river-gap); flex: none; }
+    .discard-zone.top .discard-line { flex-direction: row-reverse; }
+    .discard-zone.left .discard-line { flex-direction: column; }
+    .discard-zone.right .discard-line { flex-direction: column-reverse; }
+    .river:empty { display: none; }
+    .table-center { grid-area: 2 / 2; text-align: center; min-width: 0; }
+    .turn-dial {
+      position: relative; display: grid; place-content: center; width: min(100%, clamp(42px, 8vw, 90px));
+      aspect-ratio: 1; margin-inline: auto;
+      border: 1px solid #bc9a62; border-radius: 50%; background: var(--inset);
+      box-shadow: inset 0 0 0 3px #bda06a25, 0 4px 14px #0005;
+    }
+    .turn-needle { position: absolute; inset: 0; transform: rotate(var(--turn-angle, 0rad)); pointer-events: none; }
+    .turn-needle::before {
+      content: ''; position: absolute; top: -8%; left: 40%; width: 20%; height: 25%; background: var(--gold);
+      clip-path: polygon(50% 0, 100% 60%, 68% 60%, 68% 100%, 32% 100%, 32% 60%, 0 60%);
+    }
+    .dial-count { color: var(--gold); font-size: clamp(1.1rem, 3vw, 1.8rem); line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .dial-label, .center-info { color: var(--muted); font-size: var(--font-sm); line-height: 1.3; }
+    .center-info { min-width: 0; max-width: 100%; }
+    .center-info div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .center-info b { color: var(--text); }
     .seat {
-      background: rgba(8, 30, 18, .78);
-      border: 2px solid rgba(90, 160, 115, .5);
-      border-radius: 14px;
-      padding: 8px 12px;
-      min-width: 240px; max-width: 460px;
-      transition: box-shadow .2s, border-color .2s;
-      position: relative;
+      position: relative; background: #0f2821e8; border: 1px solid var(--line);
+      border-radius: var(--radius-sm); padding: var(--space-2); max-width: 100%;
     }
-    .seat.current {
-      border-color: var(--gold);
-      box-shadow: 0 0 14px rgba(240,199,94,.45);
-      animation: turnGlow 1.6s ease-in-out infinite;
+    .seat.current { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+    .seat .head {
+      position: absolute; z-index: 1; top: 50%; right: calc(100% + var(--space-1)); translate: 0 -50%;
+      display: flex; align-items: center; gap: var(--space-1) var(--space-2);
+      width: max-content; max-width: var(--seat-label-width); padding: 5px var(--space-2);
+      color: var(--text); background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius-sm);
     }
-    @keyframes turnGlow {
-      0%,100% { box-shadow: 0 0 8px rgba(240,199,94,.3); }
-      50% { box-shadow: 0 0 20px rgba(240,199,94,.65); }
-    }
-    .seat .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-    .seat .head .avatar { width: 34px; height: 34px; font-size: 15px; }
-    .seat .name { font-weight: 700; color: var(--gold); font-size: 15px; }
-    .seat .sub { font-size: 11px; color: #9fd0b2; }
+    .seat.current .head { border-color: var(--gold); }
+    /* The label sits before the first tile in each seat's reading direction. */
+    .seat-side.left .head { inset: auto auto calc(100% + var(--space-1)) 0; translate: none; }
+    .seat-side.right .head { inset: calc(100% + var(--space-1)) 0 auto auto; translate: none; }
+    .seat-zone.opposite .head { inset: 0 auto auto calc(100% + var(--space-1)); translate: none; }
+    .seat .head > div { min-width: 0; max-width: 100%; }
+    .seat .name { font-weight: 750; }
+    .seat :is(.name, .sub, .drawn-mark) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .seat .sub, .meld-tag { color: var(--muted); font-size: var(--font-sm); }
     .dealer-tag {
-      display: inline-block; background: var(--gold-d); color: #fff; border-radius: 6px;
-      font-size: 11px; font-weight: 700; padding: 1px 7px; margin-left: 6px; vertical-align: 2px;
+      display: inline-block; background: var(--gold); color: var(--ink); border-radius: var(--space-1);
+      font-size: .7rem; font-weight: 750; padding: 0 var(--space-1); margin-inline-start: var(--space-1);
     }
-    .melds { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
-    .meld-tag { font-size: 11px; color: #9fd0b2; }
     .river {
-      display: flex; flex-wrap: wrap; gap: 3px; max-width: 420px;
-      background: rgba(0,0,0,.22); border-radius: 8px; padding: 5px 7px; min-height: 30px;
+      display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; max-width: 100%; overflow: auto;
+      border-radius: var(--radius-sm); padding: 4px; background: #091f1a75;
     }
-    .seat.bottom-seat { max-width: none; width: 100%; }
-    .seat.bottom-seat .river { max-width: 560px; }
-    .seat.bottom-seat .hand-row { margin-top: 8px; display: flex; align-items: flex-end; gap: 4px; flex-wrap: wrap; }
-
-    /* —— 牌 —— */
+    .opponent-hand { grid-area: hand; flex-wrap: nowrap; }
+    #seat-2 .opponent-hand { flex-direction: row-reverse; }
+    :is(.seat-zone.opposite, .seat-side) .seat { display: grid; gap: var(--space-1); padding: var(--space-2); }
+    .seat-zone.opposite .seat { grid-template: "hand" auto "melds" auto / minmax(0, max-content); }
+    .seat-side.left .seat { grid-template: "hand melds" auto / auto minmax(0, max-content); }
+    .seat-side.right .seat { grid-template: "melds hand" auto / minmax(0, max-content) auto; }
+    .playfield .melds { grid-area: melds; margin-top: 0; }
+    .seat-side .opponent-hand { flex-direction: column; }
+    .seat-side.right .opponent-hand { flex-direction: column-reverse; }
+    .melds { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+    .meld-group { display: flex; gap: 2px; align-items: center; min-width: 0; }
+    .seat-side .melds { flex-wrap: nowrap; align-items: start; overflow-x: auto; }
+    .seat-side .meld-group { flex: none; flex-direction: column; }
+    .seat-side.right .meld-group { flex-direction: column-reverse; }
+    [data-testid="hand"] { display: flex; flex-wrap: wrap; gap: var(--space-1); padding: 7px var(--space-1) var(--space-1); }
+    .drawn-mark { display: block; color: var(--gold); font-weight: 750; font-size: var(--font-sm); }
     .tile {
-      display: inline-flex; align-items: center; justify-content: center;
-      background: linear-gradient(160deg, #fffdf4 0%, #f6ecd2 55%, #e9d9b4 100%);
-      border-radius: 8px; border: 1px solid #b89a5e;
-      box-shadow: 0 2px 4px rgba(0,0,0,.45), inset 0 1px 0 #fff;
-      color: #26303c; font-weight: 700;
-      user-select: none; line-height: 1;
-      min-width: 58px; height: 76px; padding: 0 6px; font-size: 52px;
-      cursor: pointer; position: relative; transition: transform .08s, box-shadow .08s;
+      position: relative; display: inline-grid; place-items: center; flex: none;
+      width: var(--hand-tile-width); height: calc(var(--hand-tile-width) * 1.36);
+      min-height: 0; padding: 0; border: 1px solid #ac9470; border-radius: 5px;
+      box-shadow: 0 2px 3px #0007; background-color: #f4edde; color: #242722;
+      font: 750 var(--font-sm)/1.1 "PingFang SC", "Microsoft YaHei", sans-serif; user-select: none;
     }
-    .tile:hover { transform: translateY(-3px); box-shadow: 0 5px 8px rgba(0,0,0,.5), inset 0 1px 0 #fff; }
-    .tile.sel {
-      transform: translateY(-14px);
-      outline: 3px solid var(--red);
-      box-shadow: 0 8px 12px rgba(0,0,0,.55);
-      z-index: 2;
+    button.tile:disabled { cursor: default; }
+    button.tile:not(:disabled):active { transform: translateY(1px); }
+    @media (hover: hover) { button.tile:not(:disabled):hover { box-shadow: 0 0 0 2px var(--gold); } }
+    button.tile.sel { transform: translateY(-5px); box-shadow: 0 0 0 2px #ffe08f, 0 4px 8px #0009; }
+    .tile.last { box-shadow: 0 0 0 2px #ef997b; }
+    .tile.photo {
+      background-image: url('/assets/mahjong-tiles.webp');
+      background-repeat: no-repeat; background-size: 900% 500%;
     }
-    .tile.small { min-width: 40px; height: 50px; font-size: 38px; border-radius: 6px; padding: 0 2px; cursor: default; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
-    .tile.small:hover { transform: none; }
-    .tile.last { outline: 2px solid var(--red); }
-    .tile.back {
-      background: linear-gradient(160deg, #2f6fb8 0%, #1d4f8f 60%, #173f75 100%);
-      border-color: #12325c; color: transparent; cursor: default;
-      font-size: 0;
+    .tile.small {
+      width: var(--bank-tile-width, 24px); height: var(--bank-tile-height, 32px); font-size: .625rem;
+      border-radius: 3px;
     }
-    .tile.back::after { content: "🀫"; font-size: 26px; opacity: .9; }
-    .tile.back.small { min-width: 30px; height: 38px; border-radius: 5px; }
-    .tile.back.small::after { font-size: 17px; }
-    .melds .tile { cursor: default; }
-    .melds .tile:hover { transform: none; }
+    .tile.back { background-color: #c48335; filter: hue-rotate(106deg) saturate(.78); }
+    #seat-1, #discard-1 { --seat-angle: -90deg; }
+    #seat-2, #discard-2 { --seat-angle: 180deg; }
+    #seat-3, #discard-3 { --seat-angle: 90deg; }
+    .tile-slot {
+      flex: none; display: grid; place-content: center;
+      width: var(--bank-tile-width); height: var(--bank-tile-height);
+    }
+    .tile-slot > .tile { transform: rotate(var(--seat-angle, 0deg)); }
+    .seat-side .tile-slot, .discard-zone.left .tile-slot, .discard-zone.right .tile-slot {
+      width: var(--bank-tile-height); height: var(--bank-tile-width);
+    }
+    .table-prompt { grid-area: prompt; grid-column: 1 / -1; display: grid; place-items: center; min-width: 0; pointer-events: none; }
+    .table-prompt:has(.table-controls :is(.claim-banner, .action-bar):not(:empty)) > .center-info { display: none; }
+    .table-controls {
+      display: flex; align-items: center; justify-content: center; gap: var(--space-1) var(--space-2);
+      width: max-content; max-width: 100%; min-width: 0; pointer-events: auto;
+      background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius-sm);
+      padding: 2px var(--space-2); box-shadow: var(--shadow);
+    }
+    .table-controls:not(:has(.claim-banner:not(:empty), .action-bar:not(:empty))) { display: none; }
+    .action-bar { display: flex; gap: var(--space-1); min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+    .action-bar button { flex: none; min-height: 40px; padding-inline: var(--space-3); white-space: nowrap; }
+    .action-bar button:focus-visible { outline-offset: -3px; }
+    .claim-banner { color: var(--gold); font-weight: 750; font-size: var(--font-sm); text-align: center; }
+    .claim-banner:empty, .action-bar:empty { display: none; }
 
-    /* 抽牌指示 */
-    .drawn-mark { color: var(--gold); font-size: 13px; font-weight: 700; margin-left: 8px; }
+    /* 弹窗 */
+    dialog {
+      width: min(560px, calc(var(--screen-width) - 24px)); max-height: calc(var(--screen-height) - 18px); overflow: auto; overscroll-behavior: contain;
+      padding: 0; border: 1px solid var(--control-line); border-radius: var(--radius);
+      background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+    }
+    dialog::backdrop { background: #06100ccd; }
+    .dialog-head {
+      position: sticky; z-index: 1; top: 0; display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--surface); border-bottom: 1px solid var(--line);
+    }
+    .dialog-head button { min-width: var(--control); }
+    .dialog-body { padding: var(--space-4); overflow-wrap: anywhere; }
+    .dialog-body p { color: var(--muted); margin-bottom: var(--space-2); }
+    .dialog-body p:last-child { margin-bottom: 0; }
+    #settings-dialog { width: min(720px, calc(var(--screen-width) - 24px)); }
+    .settings-sections { display: grid; gap: var(--space-3); }
+    .settings-section { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--inset); }
+    .settings-section h3 { margin-bottom: var(--space-2); color: var(--gold); font-size: .95rem; }
+    .settings-section p { font-size: var(--font-sm); }
+    #red-mode-help { margin-top: var(--space-2); }
+    .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .settings-toggle, #config-editor label, .fan-row label {
+      display: flex; align-items: center; gap: var(--space-2); min-height: var(--control);
+    }
+    .settings-toggle { flex-direction: row-reverse; justify-content: space-between; padding: 6px var(--space-2); background: var(--surface); border-radius: var(--radius-sm); }
+    #config-editor label { justify-content: space-between; }
+    #config-editor label > input:not([type="checkbox"]) { max-width: 65%; }
+    #settings-dialog details {
+      margin-block: var(--space-2); padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-sm); border: 1px solid var(--line);
+    }
+    #settings-dialog summary { color: var(--text); cursor: pointer; padding-block: var(--space-1); }
+    #settings-dialog textarea { display: block; width: 100%; resize: vertical; margin-top: var(--space-2); font-family: monospace; }
+    #settings-dialog .fan-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: var(--space-2); align-items: center; }
+    .settings-footer {
+      position: sticky; bottom: 0; z-index: 1; justify-content: space-between;
+      padding: var(--space-2) var(--space-4); background: var(--surface); border-top: 1px solid var(--line);
+    }
+    .settings-footer button { min-height: 36px; }
+    #settings-status { font-size: var(--font-sm); color: var(--muted); }
+    #settlement-dialog, #history-dialog { width: min(688px, calc(var(--screen-width) - 24px)); }
+    .lines .l {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+      gap: var(--space-2); padding-block: var(--space-2); border-bottom: 1px solid var(--line);
+    }
+    .lines .l b { color: var(--gold); text-align: end; }
+    .settle-head, .settle-winner { margin-bottom: var(--space-2); font-weight: 750; }
+    .settle-head { color: var(--gold); }
+    .settle-total, .settlement-hands { margin-top: var(--space-3); }
+    .settlement-hands h3 { font-size: var(--font-sm); margin-block: var(--space-2) var(--space-1); }
+    .log { font-size: var(--font-sm); background: var(--inset); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
+    .log:empty, .log:not(:empty) + p { display: none; }
+    #room-history { overflow: auto; }
+    .history-table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); font-variant-numeric: tabular-nums; }
+    .history-table th, .history-table td { padding: var(--space-2); border-bottom: 1px solid var(--line); }
+    .history-table th:first-child { text-align: start; }
+    .history-table th:not(:first-child), .history-table td { text-align: end; }
+    .history-table small { display: block; color: var(--muted); font-weight: 400; }
+    .history-total { background: var(--inset); color: var(--gold); font-weight: 750; }
+    .gain { color: #b9dfb1; }
+    .loss { color: var(--error-text); }
+    .confirmation-actions { justify-content: end; margin-top: var(--space-3); }
 
-    /* —— 操作区 —— */
-    .action-bar {
-      display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
-      padding: 10px 0 4px;
+    @media (max-width: 860px) {
+      .in-game #conn-status, #score-values {
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+      }
+      .in-game header.top button, .table-topbar .badge { padding-inline: 6px; }
     }
-    .action-bar button {
-      font-size: 17px; font-weight: 700; padding: 12px 30px; border-radius: 12px;
-      border-width: 2px; box-shadow: 0 4px 10px rgba(0,0,0,.4);
+    @media (max-width: 860px), (orientation: landscape) and (max-height: 540px) {
+      .table { --seat-label-width: 82px; }
+      .seat .avatar { width: 16px; height: 16px; font-size: 9px; }
+      .seat .head { gap: 3px; padding: 4px; }
+      .seat :is(.name, .sub) { font-size: .75rem; }
+      .seat-side .sub { font-size: .625rem; }
     }
-    .action-bar button.hu { background: linear-gradient(#e0564a, #b02f24); border-color: #ff9d8f; color: #fff; }
-    .action-bar button.primary { font-size: 18px; padding: 13px 38px; }
-    .claim-banner {
-      text-align: center; color: var(--gold); font-weight: 700; font-size: 15px;
-      animation: turnGlow 1.2s ease-in-out infinite; border-radius: 10px;
-      background: rgba(240,199,94,.12); border: 1px dashed rgba(240,199,94,.5);
-      padding: 6px; margin-bottom: 8px;
+    @media (max-width: 680px) {
+      .lobby-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      .lobby-fields > :first-child { grid-column: 1 / -1; }
+      .hero { margin-bottom: var(--space-3); }
+      .in-game #app { padding-inline: 8px; }
+      .table {
+        --seat-label-width: 64px;
+        --bank-tile-width: 16px; --bank-tile-height: 22px;
+        --discard-tile-width: 14px; --discard-tile-height: 19px;
+        gap: var(--space-2); min-height: 0; border-width: 3px; border-radius: var(--radius);
+      }
+      .playfield { --bank-tile-width: 14px; --bank-tile-height: 19px; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-1); }
+      .center-board { column-gap: var(--space-1); }
+      .center-info, .dial-label { font-size: .75rem; }
+      .seat { padding: var(--space-1) var(--space-2); }
     }
-
-    /* —— 底部信息面板 —— */
-    .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 800px) { .bottom-grid { grid-template-columns: 1fr; } .table-mid { grid-template-columns: 1fr; } }
-    .lines { font-size: 13px; }
-    .lines .l { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #2f5f43; padding: 4px 2px; }
-    .lines .l b { color: var(--gold); white-space: nowrap; }
-    .settle-head { color: var(--gold); font-weight: 700; margin-bottom: 4px; }
-    .log {
-      max-height: 170px; overflow-y: auto; font-size: 12.5px; color: #9fd0b2;
-      font-family: "Cascadia Mono", Consolas, monospace; line-height: 1.7;
-      background: rgba(0,0,0,.25); border-radius: 8px; padding: 8px 10px;
+    @media (orientation: portrait) and (max-width: 540px) {
+      .playfield { --prompt-height: 76px; }
+      .seat-zone.opposite { grid-column: 1 / -1; }
+      .seat-side { grid-row: 2; }
+      .table { --hand-tile-width: clamp(22px, 6.7vw, 36px); }
+      .seat-zone .head { flex-direction: column; max-width: 52px; text-align: center; }
+      .seat-zone.opposite { padding-inline-end: 56px; }
+      .seat-zone.bottom { padding-inline-start: 56px; }
+      .table-controls { flex-direction: column; }
     }
-    .log::-webkit-scrollbar { width: 8px; }
-    .log::-webkit-scrollbar-thumb { background: #2f6b45; border-radius: 4px; }
-    :root { --gold:#e9cc91; --panel:rgba(16,35,31,.94); --line:#36534a; }
-    body { background:#0c1916; color:#f2eee3; }
-    #app { max-width:1280px; padding:20px 28px 36px; }
-    header.top { padding-bottom:22px; } .logo { text-shadow:none; } .logo small { color:#a7b9ae; }
-    .hero { position:relative; overflow:hidden; border:1px solid #526050; border-radius:22px; min-height:350px; margin-bottom:24px; background:linear-gradient(90deg,rgba(7,24,19,.94),rgba(7,24,19,.3)),url('https://images.unsplash.com/photo-1518837695005-2083093ee35b?auto=format&fit=crop&w=1800&q=85') center/cover; }
-    .hero-copy { padding:42px; max-width:620px; } .eyebrow { font-size:11px; letter-spacing:3px; color:var(--gold); } h1 { font-family:Georgia,'Microsoft YaHei',serif; font-size:48px; line-height:1.3; margin:18px 0; letter-spacing:4px; } .hero p { color:#c1cfc5; line-height:1.8; } .hero a { display:inline-block; color:var(--gold); margin-top:24px; text-decoration:none; } .photo-credit { position:absolute; bottom:16px; right:20px; font-size:10px; color:#ccd7ce; }
-    #lobby { padding:24px; } #lobby h2 { margin-bottom:18px; font-size:20px; } h2 small { font-size:12px; color:#9fb1a6; font-weight:400; margin-left:12px; } #lobby .ctl { gap:12px; } button,input,select { min-height:42px; } button { background:#244d3e; } button.primary { background:#e3c485; color:#24362c; }
-    .table { border:8px solid #6b5237; background:radial-gradient(ellipse at center,#34745a,#153e30); padding:24px; } .table::before { display:none; } .seat { background:rgba(8,29,23,.6); min-width:0; } .table-mid { grid-template-columns:minmax(0,1fr) 180px minmax(0,1fr); margin:18px 0; } .table-center { min-width:0; } .tile { min-width:48px; height:66px; font-size:46px; } .tile.small { min-width:30px; height:40px; font-size:29px; } [data-testid="hand"] { display:flex; flex-wrap:wrap; gap:4px; padding-top:14px; }
-    dialog { margin:auto; width:min(520px,92vw); max-height:90vh; overflow:auto; padding:28px; color:#eee9dc; background:#142d24; border:1px solid #647558; border-radius:18px; box-shadow:0 30px 100px #0009; } dialog::backdrop { background:#0009; backdrop-filter:blur(5px); } .settings-head { display:flex; align-items:center; justify-content:space-between; } dialog p { font-size:13px; color:#acbfb1; margin:16px 0; line-height:1.7; } dialog label { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:16px 0; } #rule-settings>* { display:block; width:100%!important; margin:12px 0; } body.reduce-motion *,body.reduce-motion *::after { animation:none!important; transition:none!important; } :focus-visible { outline:3px solid var(--gold); outline-offset:3px; }
-    @media(max-width:800px) { #app { padding:12px; } .hero-copy { padding:28px; } h1 { font-size:36px; } .table-mid { grid-template-columns:1fr; } .table-center { order:-1; } .seat-side { margin:8px 0; } .seat { width:100%; } .table { padding:12px; } .logo small { display:block; margin:4px 0; } }
-    @media(prefers-reduced-motion:reduce) { * { animation:none!important; transition:none!important; } }
-    body.in-game .hero, body.in-game #lobby { display:none; }
-    body.in-game #app { max-width:none; min-height:100vh; }
-    body.in-game .table { min-height:65vh; display:flex; flex-direction:column; justify-content:space-between; }
-    body.in-game .bottom-grid { margin-top:20px; }
-    body.in-game header.top { padding-bottom:12px; }
-    /* Use text glyphs so platform emoji rendering cannot override suit colors. */
-    .tile { font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', serif; font-variant-emoji: text; }
-    .tile.suit-characters { color: #b5232c; }
-    .tile.suit-bamboo { color: #167442; }
-    .tile.suit-dots { color: #205ca5; }
-    .tile img { width:100%; height:100%; object-fit:contain; pointer-events:none; }
+    @media (orientation: portrait) and (max-width: 540px) and (max-height: 640px) {
+      .playfield { --bank-tile-width: 10px; --bank-tile-height: 14px; }
+      .playfield .opponent-hand { gap: 1px; padding: 2px; }
+    }
+    @media (orientation: portrait) and (max-width: 540px) and (max-height: 640px), (orientation: landscape) and (max-height: 540px) {
+      .seat-side .head .sub {
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+      }
+    }
+    @media (max-width: 450px) {
+      .in-game header.top { gap: var(--space-1); }
+      .in-game header.top button, .table-topbar .badge { padding-inline: 4px; font-size: .75rem; }
+      button.scores { flex: none; }
+      .in-game .compact-label { display: inline; }
+      .in-game .wide-label, #dead-wall { display: none; }
+    }
+    @media (max-width: 580px) {
+      .lobby-fields, .lobby-actions { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 420px) {
+      .settings-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (orientation: landscape) and (max-height: 540px) {
+      #app { padding-inline: 12px; padding-bottom: 8px; }
+      .in-game #app { padding-inline: 10px; }
+      header.top { padding-block: var(--space-1); }
+      .hero { min-height: 82px; padding: 12px 20px; margin-bottom: 8px; }
+      .hero h1 { font-size: 2.1rem; }
+      .photo-credit { font-size: .65rem; padding: 1px 4px; }
+      .panel { padding: 10px 12px; }
+      .lobby-fields { margin-block: 6px; }
+      .lobby-fields > :first-child { grid-column: auto; }
+      .lobby-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr); }
+      .lobby-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .lobby-action { padding: 7px 8px; gap: 6px; }
+      .lobby-fields :is(input, select), .lobby-action :is(button, input) { min-height: 34px; padding-block: 4px; font-size: var(--font-sm); }
+      .settings-sections { padding: 10px; }
+      .settings-section :is(input:not([type="checkbox"]), select), .settings-toggle { min-height: 36px; }
+      .dialog-head button { min-height: 34px; padding-block: 4px; }
+      .settings-footer { padding-block: 6px; }
+      .table {
+        --bank-tile-width: 15px; --bank-tile-height: 20px;
+        --discard-tile-width: 13px; --discard-tile-height: 17px;
+        --hand-tile-width: clamp(25px, calc(var(--screen-width) * .044), 36px);
+        min-height: 0; padding: var(--space-2); gap: var(--space-2);
+      }
+      .playfield { --bank-tile-width: 10px; --bank-tile-height: 14px; --prompt-height: 46px; gap: var(--space-1); }
+      @supports (width: 1cqh) {
+        .playfield { container-type: size; }
+        .playfield > :is(.seat-zone.opposite, .seat-side) {
+          /* Reserve room at both ends of the vertical banks for floating labels. */
+          --bank-tile-width: clamp(8px, calc((100cqh - 88px) / 14), 12px);
+          --bank-tile-height: calc(var(--bank-tile-width) * 1.4);
+        }
+      }
+      .playfield .head { line-height: 1.2; }
+      .playfield .opponent-hand { gap: 1px; padding: 2px; }
+      :is(.seat-zone.opposite, .seat-side) .seat { padding: var(--space-1); }
+      .action-bar button { min-height: 36px; padding: 4px var(--space-2); }
+      .discard-zone .river { padding: 3px; }
+      .seat { padding-block: var(--space-1); }
+      .seat-side .meld-group { gap: 1px; }
+      .turn-dial { width: min(100%, 42px); }
+    }
+    @media (orientation: landscape) and (max-height: 340px) {
+      header.top { padding-block: 2px; }
+      header.top button { min-height: 28px; }
+      .table { padding: var(--space-1); gap: var(--space-1); }
+    }
+    @media (min-width: 675px) {
+      .settings-sections { grid-template-columns: 1fr 1fr; }
+      .settings-section:last-child { grid-column: 1 / -1; }
+    }
+    body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after {
+      animation: none !important; transition: none !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
   </style>
 </head>
 <body>
   <div id="app">
     <header class="top">
-      <div class="logo">雀界 · 广东麻将<small>岭南牌局 · 闲坐一局</small></div>
-      <div class="spacer"></div>
-      <button id="btn-settings" aria-haspopup="dialog">⚙ 设置</button><button id="btn-home" class="hidden">← 返回大厅</button><span id="conn-status" data-testid="conn-status"></span>
+      <div class="table-topbar">
+        <span class="badge" id="wall-count" data-testid="wall-count"><span id="live-wall-count"></span><span id="dead-wall"></span></span>
+        <span class="badge" id="dealer-info"></span>
+        <button class="badge scores" id="scores" data-testid="scores" aria-haspopup="dialog">战绩<span id="score-values"></span></button>
+      </div>
+      <div class="header-actions">
+        <span id="conn-status" data-testid="conn-status" role="status"></span>
+        <button id="btn-settlement" class="settlement-button" aria-label="本局结算" aria-haspopup="dialog" disabled><span class="wide-label">本局结算</span><span class="compact-label">结算</span></button>
+        <button id="btn-logs" aria-label="对局日志" aria-haspopup="dialog"><span class="wide-label">对局日志</span><span class="compact-label">日志</span></button>
+        <button id="btn-settings" aria-haspopup="dialog">设置</button>
+        <button id="btn-home" class="hidden" aria-label="返回大厅"><span id="home-label" class="wide-label">返回大厅</span><span class="compact-label">返回</span></button>
+      </div>
     </header>
 
-    <section class="hero"><div class="hero-copy"><span class="eyebrow">QUEJIE / CANTONESE MAHJONG</span><h1>一桌好牌，<br>一刻闲趣。</h1><p>地道广东规则，邀好友入座，或与 AI 切磋牌技。</p><a href="#lobby">开启你的下一局 ↓</a></div><div class="photo-credit">实景摄影 · Unsplash</div></section>
-    <div id="lobby" class="panel"><h2>入座开局 <small>选择玩法，即刻开始</small></h2>
-      <div class="ctl">
-        <input id="name-input" data-testid="name-input" placeholder="昵称" value="玩家" style="width:90px" />
-        <select id="preset-select" data-testid="preset-select">
-          <option value="gd128">gd128 红中变主流</option>
-          <option value="gd136">gd136 全牌</option>
-          <option value="gd100">gd100 条筒字</option>
-          <option value="gd108">gd108 无字</option>
-        </select>
-        <select id="cap-select" data-testid="cap-select">
-          <option value="fixed3">封顶 3 番</option>
-          <option value="fixed5">封顶 5 番</option>
-          <option value="tiered">分档封顶 3/4/5</option>
-          <option value="formula">动态封顶（杠数）</option>
-          <option value="unlimited">不封顶（hardCap 10）</option>
-        </select>
-        <button id="btn-local" data-testid="btn-local" class="primary">本地单机（PVE）</button>
-        <button id="btn-create" data-testid="btn-create">创建联机房间</button>
-        <input id="join-code" data-testid="join-code" placeholder="房间号" style="width:90px" />
-        <button id="btn-join" data-testid="btn-join">加入房间</button>
-        <label class="switch"><input type="checkbox" id="auto-play" data-testid="auto-play" /> 自动托管本机</label>
-      </div>
-    </div>
-
-    <div id="room-panel" class="panel hidden">
-      <h2>房间 <span id="room-code" data-testid="room-code" style="color:var(--gold)"></span>
-        <span id="rules-summary" style="font-size:12px;color:#9fd0b2;font-weight:400"></span>
-      </h2>
-      <div id="players" class="row" data-testid="players"></div>
-      <div class="row">
-        <button id="btn-ready" data-testid="btn-ready">准备</button>
-        <button id="btn-start-ai" data-testid="btn-start-ai" class="primary">填充 AI 并开始</button>
-        <button id="btn-leave" data-testid="btn-leave" class="danger">离开房间</button>
-      </div>
-    </div>
-
-    <div id="table-panel" class="hidden">
-      <div class="table-topbar">
-        <span class="badge" id="wall-count" data-testid="wall-count"></span>
-        <span class="badge" id="dealer-info"></span>
-        <span class="badge scores" id="scores" data-testid="scores"></span>
-      </div>
-
-      <div class="table">
-        <div id="claim-hint" data-testid="claim-hint"></div>
-        <div class="seat-zone"><div id="seat-2" class="seat" data-testid="seat-2"></div></div>
-        <div class="table-mid">
-          <div class="seat-side left"><div id="seat-3" class="seat" data-testid="seat-3"></div></div>
-          <div class="table-center">
-            <div class="center-info" id="center-info"></div>
+    <main>
+      <div id="home-panel">
+        <section class="hero">
+          <div class="hero-copy">
+            <h1>广东麻将</h1>
           </div>
-          <div class="seat-side right"><div id="seat-1" class="seat" data-testid="seat-1"></div></div>
-        </div>
-        <div class="seat-zone bottom">
-          <div id="seat-0" class="seat bottom-seat" data-testid="seat-0"></div>
-        </div>
+          <a class="photo-credit" href="https://unsplash.com/photos/mahjong-tiles-on-green-felt-table-fDXUYOLulNQ" target="_blank" rel="noopener noreferrer">摄影 · Astra Virtually</a>
+        </section>
+        <section id="lobby" class="panel" aria-labelledby="lobby-title">
+          <div class="lobby-heading">
+            <h2 id="lobby-title" tabindex="-1">入座开局</h2>
+            <button id="btn-rule-settings" aria-haspopup="dialog">玩法设置</button>
+          </div>
+          <div class="lobby-fields">
+            <label class="form-field"><span>玩家昵称</span><input id="name-input" data-testid="name-input" value="玩家" autocomplete="nickname"></label>
+            <label class="form-field"><span>牌组</span><select id="preset-select" data-testid="preset-select"></select></label>
+            <label class="form-field"><span>封顶番数</span><select id="cap-select" data-testid="cap-select">
+              <option value="fixed3">3 番</option>
+              <option value="fixed5">5 番</option>
+              <option value="tiered">分档封顶 3/4/5</option>
+              <option value="formula">动态封顶（杠数）</option>
+              <option value="unlimited">不封顶（上限 10）</option>
+            </select></label>
+          </div>
+          <div class="lobby-actions">
+            <div class="lobby-action">
+              <h3>单机练习</h3>
+              <button id="btn-local" data-testid="btn-local" class="primary">开始练习</button>
+            </div>
+            <div class="lobby-action">
+              <div><h3>好友开桌</h3><p>创建房间后分享房间号</p></div>
+              <button id="btn-create" data-testid="btn-create">创建联机房间</button>
+            </div>
+            <form id="join-form" class="lobby-action">
+              <h3>加入好友</h3>
+              <div class="row">
+                <label class="sr-only" for="join-code">房间号</label>
+                <input id="join-code" data-testid="join-code" required inputmode="numeric" maxlength="4" autocomplete="off" placeholder="4 位房间号">
+                <button id="btn-join" data-testid="btn-join">加入房间</button>
+              </div>
+            </form>
+          </div>
+          <div id="lobby-status" class="feedback" role="status"></div>
+          <div id="lobby-error" class="feedback" role="alert"></div>
+        </section>
       </div>
 
-      <div class="action-bar" id="action-bar" data-testid="action-bar"></div>
+      <div id="game-error" class="feedback" role="alert"></div>
+      <section id="room-panel" class="panel hidden" aria-labelledby="room-title">
+        <h2 id="room-title" tabindex="-1">房间 <span id="room-code" data-testid="room-code"></span></h2>
+        <p id="rules-summary"></p>
+        <div id="players" class="row" data-testid="players"></div>
+        <div class="row">
+          <button id="btn-ready" data-testid="btn-ready">准备</button>
+          <button id="btn-start-ai" data-testid="btn-start-ai" class="primary">填充 AI 并开始</button>
+          <button id="btn-room-history" aria-haspopup="dialog">房间战绩</button>
+          <button id="btn-leave" data-testid="btn-leave" class="danger" aria-haspopup="dialog">离开房间</button>
+        </div>
+      </section>
 
-      <div class="bottom-grid">
-        <div class="panel" style="margin-bottom:0">
-          <h2>结算明细</h2>
-          <div id="settle" class="lines" data-testid="settle-panel"></div>
+      <section id="table-panel" class="hidden" aria-labelledby="table-title">
+        <h2 id="table-title" class="sr-only" tabindex="-1">麻将牌桌</h2>
+        <div class="table">
+          <div class="playfield" id="playfield">
+            <div class="seat-zone opposite"><div id="seat-2" class="seat" data-testid="seat-2"></div></div>
+            <div class="seat-side left"><div id="seat-3" class="seat" data-testid="seat-3"></div></div>
+            <div class="center-board">
+              <div id="discard-2" class="discard-zone top"></div>
+              <div id="discard-3" class="discard-zone left"></div>
+              <div class="table-center">
+                <div id="turn-dial" class="turn-dial">
+                  <span id="turn-needle" class="turn-needle" aria-hidden="true" hidden></span>
+                  <span id="dial-count" class="dial-count"></span>
+                  <span class="dial-label">余牌</span>
+                </div>
+              </div>
+              <div id="discard-1" class="discard-zone right"></div>
+              <div id="discard-0" class="discard-zone bottom"></div>
+            </div>
+            <div class="seat-side right"><div id="seat-1" class="seat" data-testid="seat-1"></div></div>
+            <div class="table-prompt">
+              <div class="center-info" id="center-info" role="status"></div>
+              <div class="table-controls">
+                <div id="claim-hint" class="claim-banner" data-testid="claim-hint" role="status"></div>
+                <div class="action-bar" id="action-bar" data-testid="action-bar" role="group" aria-label="出牌与响应"></div>
+              </div>
+            </div>
+          </div>
+          <div class="seat-zone bottom">
+            <div id="seat-0" class="seat bottom-seat" data-testid="seat-0"></div>
+          </div>
         </div>
-        <div class="panel" style="margin-bottom:0">
-          <h2>对局日志</h2>
-          <div id="log" class="log" data-testid="action-log"></div>
-        </div>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
-  <dialog id="settings-dialog" aria-labelledby="settings-title"><form method="dialog"><div class="settings-head"><h2 id="settings-title">牌局设置</h2><button aria-label="关闭设置">✕</button></div><p>规则和昵称用于下一局；显示与操作设置立即生效。</p><div id="rule-settings"></div><label>AI 出牌间隔<select id="ai-delay"><option value="150">快速 · 150 ms</option><option value="600">舒适 · 600 ms</option><option value="1200">悠闲 · 1.2 秒</option></select></label><label><input id="single-click" type="checkbox"> 单击直接出牌</label><label><input id="reduce-motion" type="checkbox"> 减少动态效果</label><button class="primary">完成并返回</button><span id="settings-status" role="status"></span></form></dialog>
+
+  <dialog id="settlement-dialog" aria-labelledby="settlement-title">
+    <form class="dialog-head" method="dialog">
+      <h2 id="settlement-title">结算明细</h2>
+      <button aria-label="关闭结算" autofocus>✕</button>
+    </form>
+    <div id="settle" class="dialog-body lines" data-testid="settle-panel"></div>
+  </dialog>
+  <dialog id="logs-dialog" aria-labelledby="logs-title">
+    <form class="dialog-head" method="dialog">
+      <h2 id="logs-title">对局日志</h2>
+      <button aria-label="关闭日志" autofocus>✕</button>
+    </form>
+    <div class="dialog-body">
+      <div id="log" class="log" data-testid="action-log"></div>
+      <p>暂无对局记录。</p>
+    </div>
+  </dialog>
+  <dialog id="history-dialog" aria-labelledby="history-title">
+    <form class="dialog-head" method="dialog">
+      <h2 id="history-title">房间战绩</h2>
+      <button aria-label="关闭战绩" autofocus>✕</button>
+    </form>
+    <div class="dialog-body">
+      <p id="history-summary"></p>
+      <div id="room-history" role="region" aria-label="各局分数" tabindex="0"></div>
+      <p id="history-empty">暂无结算记录。</p>
+    </div>
+  </dialog>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog">
+      <div class="dialog-head"><h2 id="settings-title">牌局设置</h2><button aria-label="关闭设置" autofocus>✕</button></div>
+      <div class="dialog-body settings-sections">
+        <section class="settings-section" aria-labelledby="rules-heading">
+          <h3 id="rules-heading">开局规则</h3>
+          <p>单机开局或创建房间时生效。</p>
+          <div class="settings-grid">
+            <label class="form-field"><span>人数</span><select id="player-count"><option value="2">2 人</option><option value="3">3 人</option><option value="4" selected>4 人</option></select></label>
+            <label class="form-field"><span>红中模式</span><select id="red-mode" aria-describedby="red-mode-help"><option value="wild">红中变（万能牌）</option><option value="normal">普通红中</option><option value="off">关闭红中变</option></select></label>
+            <label class="settings-toggle"><input type="checkbox" id="no-discard-hu" checked>禁止点炮胡</label>
+            <label class="settings-toggle"><input type="checkbox" id="draw-only">红中变仅自摸</label>
+          </div>
+          <p id="red-mode-help">所选牌组缺少红中时，红中变模式会加入四张红中。</p>
+        </section>
+        <section class="settings-section" aria-labelledby="controls-heading">
+          <h3 id="controls-heading">操作与显示</h3>
+          <div class="settings-grid">
+            <label class="form-field"><span>单机 AI 出牌间隔</span><select id="ai-delay"><option value="150">快速 · 150 ms</option><option value="600">舒适 · 600 ms</option><option value="1200">悠闲 · 1.2 秒</option></select></label>
+            <label class="settings-toggle"><input type="checkbox" id="auto-play" data-testid="auto-play">自动托管本机</label>
+            <label class="settings-toggle"><input id="single-click" type="checkbox">单击直接出牌</label>
+            <label class="settings-toggle"><input id="reduce-motion" type="checkbox">减少动态效果</label>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="advanced-heading">
+          <h3 id="advanced-heading">高级规则</h3>
+          <details>
+            <summary>番型与附加番</summary>
+            <p>勾选启用并填写番数。缺少所需牌张的番型会自动禁用。</p>
+            <div id="fan-list"></div>
+          </details>
+          <details>
+            <summary>完整规则配置</summary>
+            <p>完整配置优先于快捷选项。可编辑牌张数量、计分、封顶、杠分与包牌等规则。</p>
+            <div class="row">
+              <button id="load-config" type="button">载入快捷配置</button>
+              <button id="clear-config" type="button">恢复快捷配置</button>
+            </div>
+            <div id="config-editor"></div>
+            <details>
+              <summary>查看或编辑 JSON</summary>
+              <textarea id="full-config" aria-label="完整规则 JSON" rows="8" spellcheck="false"></textarea>
+            </details>
+          </details>
+        </section>
+      </div>
+      <div class="row settings-footer"><span id="settings-status" role="status"></span><button class="primary">完成</button></div>
+    </form>
+  </dialog>
+  <dialog id="leave-dialog" aria-labelledby="leave-title" aria-describedby="leave-description">
+    <form method="dialog">
+      <div class="dialog-head"><h2 id="leave-title">离开房间？</h2></div>
+      <div class="dialog-body">
+        <p id="leave-description">离开后将返回大厅。</p>
+        <div class="row confirmation-actions">
+          <button value="cancel" autofocus>取消</button>
+          <button value="leave" class="danger">确认离开</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
   <script type="module" src="./main.js"></script>
 </body>
 </html>

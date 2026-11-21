@@ -14,7 +14,6 @@ import {
   resolveFanConfig,
   validateFanConfig,
   type ResolvedFanConfig,
-  type FanConfig,
 } from '@quejie/fan-config';
 import type { ClientMessage, Seat } from '@quejie/protocol';
 import { Room, randomRoomCode, randomToken, type RoomSession } from './room.js';
@@ -42,10 +41,11 @@ interface ConnState {
   token: string | null;
 }
 
-function resolvedConfig(preset: string, roomLevel: number, capType?: string, capFixed?: number): ResolvedFanConfig {
+function resolvedConfig(preset: string, roomLevel: number, capType?: string, capFixed?: number, allowDiscardHu?: boolean): ResolvedFanConfig {
   const cfg = defaultFanConfig();
   cfg.tileSet = clonePreset(preset);
   cfg.tileSet.preset = preset;
+  if (allowDiscardHu !== undefined) cfg.rules = { ...cfg.rules, allowDiscardHu };
   if (cfg.tileSet.redCenterMode !== 'wild') {
     cfg.scoring.redCenterBonus.enabled = false;
   }
@@ -90,7 +90,9 @@ function sendTo(conn: ConnState, msg: unknown): void {
   if (conn.socket.readyState === 1) conn.socket.send(JSON.stringify(msg));
 }
 
-function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, capType?: string, capFixed?: number, config?: FanConfig, playerCount = 4): void {
+function handleCreateRoom(conn: ConnState, {
+  preset = 'gd128', roomLevel = 1, capType, capFixed, config, playerCount = 4, allowDiscardHu,
+}: Extract<ClientMessage, { type: 'createRoom' }>): void {
   if (conn.room) {
     sendTo(conn, { type: 'error', code: 'E_IN_ROOM', message: '已在一个房间中，请先离开' });
     return;
@@ -104,7 +106,7 @@ function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, ca
       const checked = resolveFanConfig(config);
       if (!checked.ok || !checked.resolved) throw new Error(checked.errors.map(e => e.message).join('; '));
       resolved = checked.resolved;
-    } else resolved = resolvedConfig(preset, roomLevel, capType, capFixed);
+    } else resolved = resolvedConfig(String(preset), Number(roomLevel), capType, capFixed, allowDiscardHu);
   } catch (e) {
     sendTo(conn, { type: 'error', code: 'E_CONFIG', message: String((e as Error).message) });
     return;
@@ -112,7 +114,7 @@ function handleCreateRoom(conn: ConnState, preset: string, roomLevel: number, ca
   const room = new Room(code, resolved, {
     resolved,
     playerCount,
-    roomLevel,
+    roomLevel: Number(roomLevel),
     turnTimeoutMs: TURN_TIMEOUT_MS,
     claimTimeoutMs: CLAIM_TIMEOUT_MS,
     aiDelayMs: AI_DELAY_MS,
@@ -198,7 +200,7 @@ function handleMessage(conn: ConnState, raw: string): void {
       conn.name = String(msg.name || '玩家').slice(0, 20);
       break;
     case 'createRoom':
-      handleCreateRoom(conn, String(msg.preset ?? 'gd128'), Number(msg.roomLevel ?? 1), msg.capType, msg.capFixed, msg.config, msg.playerCount);
+      handleCreateRoom(conn, msg);
       break;
     case 'joinRoom':
       handleJoinRoom(conn, String(msg.roomCode));
@@ -262,6 +264,7 @@ function handleMessage(conn: ConnState, raw: string): void {
 }
 
 const DEMO_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'h5-demo');
+const DEMO_IMAGES = new Set(['/assets/mahjong-table.webp', '/assets/mahjong-tiles.webp']);
 
 const httpServer = createServer((req, res) => {
   // H5 调试客户端静态托管
@@ -273,6 +276,11 @@ const httpServer = createServer((req, res) => {
   if (req.url === '/main.js') {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
     res.end(readFileSync(join(DEMO_DIR, 'dist', 'main.js')));
+    return;
+  }
+  if (req.url && DEMO_IMAGES.has(req.url)) {
+    res.writeHead(200, { 'content-type': 'image/webp' });
+    res.end(readFileSync(join(DEMO_DIR, req.url)));
     return;
   }
   if (req.url === '/health') {

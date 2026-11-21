@@ -68,6 +68,7 @@ export function hash32(input: string): string {
 }
 
 export const DEFAULT_RULES: Required<RuleToggles> = {
+  allowDiscardHu: true,
   missedWinLock: true,
   multiWinEnabled: false,
   robConcealedKongForThirteenOrphans: true,
