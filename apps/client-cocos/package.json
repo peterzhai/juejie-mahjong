@@ -1,0 +1,20 @@
+{
+  "name": "@quejie/client-cocos",
+  "version": "0.1.0",
+  "private": true,
+  "uuid": "67a95421-7a09-4774-ae70-d0259ac50192",
+  "creator": {
+    "version": "3.8.8"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@quejie/fan-config": "*",
+    "@quejie/mahjong-core": "*",
+    "@quejie/protocol": "*"
+  },
+  "devDependencies": {
+    "@cocos/creator-types": "3.8.8"
+  }
+}

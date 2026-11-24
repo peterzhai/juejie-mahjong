@@ -35,7 +35,7 @@ export class SoundManager extends Component {
   private handles = new Map<SoundName, IAudioHandle | null>();
   private muted = false;
 
-  protected onLoad(): void {
+  protected override onLoad(): void {
     // 单例：重复节点自毁
     if (SoundManager.instance && SoundManager.instance !== this) {
       this.node.destroy();
@@ -62,7 +62,7 @@ export class SoundManager extends Component {
     );
   }
 
-  protected onDestroy(): void {
+  protected override onDestroy(): void {
     input.off(Input.EventType.TOUCH_START, this.onFirstTouch, this);
     game.off(Game.EVENT_HIDE, this.onBackground, this);
     game.off(Game.EVENT_SHOW, this.onForeground, this);

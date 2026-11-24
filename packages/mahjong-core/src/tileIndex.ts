@@ -8,6 +8,7 @@ export class TileIndex {
   /** 启用牌面的去重 ID，顺序：万条筒（各 9）→ 风 → 箭 */
   readonly ids: readonly TileId[];
   readonly indexOf: ReadonlyMap<TileId, number>;
+  readonly copies: readonly number[];
   readonly wildIndex: number;
   readonly wildcardTile: TileId | null;
   /** 每种花色的 rank(1..9) → 索引（仅启用的花色） */
@@ -17,10 +18,13 @@ export class TileIndex {
     const tileSet = resolved.tileSet;
     const faces: FaceName[] = ['character', 'bamboo', 'dot', 'east', 'south', 'west', 'north', 'red', 'green', 'white'];
     const ids: TileId[] = [];
+    const copies: number[] = [];
     const suitRanks = new Map<SuitFaceName, number[]>();
     for (const face of faces) {
-      if (!faceConfig(tileSet, face).enabled) continue;
+      const cfg = faceConfig(tileSet, face);
+      if (!cfg.enabled) continue;
       const tiles = faceToTiles(face);
+      copies.push(...tiles.map(() => cfg.copies));
       if (face === 'character' || face === 'bamboo' || face === 'dot') {
         suitRanks.set(face, tiles.map((t) => ids.length + tiles.indexOf(t)));
         ids.push(...tiles);
@@ -29,6 +33,7 @@ export class TileIndex {
       }
     }
     this.ids = ids;
+    this.copies = copies;
     this.suitRanks = suitRanks;
     const map = new Map<string, number>();
     ids.forEach((id, i) => map.set(id, i));

@@ -10,8 +10,7 @@ export type MessageHandler = (msg: ServerMessage) => void;
 
 /** 心跳间隔（ms）：每 15s 发一次 ping */
 const HEARTBEAT_INTERVAL_MS = 15000;
-/** pong 超时（ms）：发出 ping 后 8s 未收到 pong 视为链路死亡，主动断开重连 */
-const PONG_TIMEOUT_MS = 8000;
+const MAX_MISSED_HEARTBEATS = 2;
 /** 重连退避：1s 起步，翻倍，封顶 15s */
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -24,17 +23,17 @@ export class NetClient {
   /** 连接状态 */
   private connected = false;
   private manualClosed = false;
-  private everOpened = false;
 
   /** 重连凭据：进入房间后由 GameManager 注入（roomCode + welcome 返回的 token） */
   private roomCode = '';
   private token = '';
   private hasJoinedRoom = false; // 一旦真正进过房间，断线重连才携带 reconnect 消息
+  private awaitingRoom = false;
 
   /** 心跳定时器（setTimeout/setInterval 在 web 与微信小游戏均可用） */
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private pongDeadline = 0;
-  private heartbeatChecker: ReturnType<typeof setInterval> | null = null;
+  private missedHeartbeats = 0;
+  private lastHeartbeatAt = 0;
 
   /** 重连尝试计数 */
   private reconnectAttempts = 0;
@@ -46,15 +45,11 @@ export class NetClient {
   /** 生命周期回调（由 GameManager 注册） */
   public onOpenChanged: ((connected: boolean) => void) | null = null;
   public onReconnected: (() => void) | null = null;
+  public onSessionLost: ((message: string) => void) | null = null;
 
   /** 是否处于连接状态 */
   public get isConnected(): boolean {
     return this.connected;
-  }
-
-  /** 是否曾经打开过连接（区分首连与重连） */
-  public get hasEverOpened(): boolean {
-    return this.everOpened;
   }
 
   // —— 连接管理 ——
@@ -73,6 +68,7 @@ export class NetClient {
     this.manualClosed = true;
     this.stopHeartbeat();
     this.cancelReconnect();
+    this.awaitingRoom = false;
     this.outbox = [];
     const socket = this.ws;
     this.ws = null;
@@ -129,10 +125,10 @@ export class NetClient {
    * 主动断开（manualClosed）时返回 false 不入缓冲。
    */
   public send(msg: ClientMessage): boolean {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (!this.awaitingRoom && this.ws?.readyState === WebSocket.OPEN) {
       return this.sendRaw(msg);
     }
-    if (this.manualClosed) return false;
+    if (this.manualClosed || msg.type === 'action') return false;
     if (this.outbox.length >= 32) this.outbox.shift();
     this.outbox.push(msg);
     return true;
@@ -171,33 +167,36 @@ export class NetClient {
     if (!socket) return;
 
     socket.onopen = () => {
-      const wasReconnect = this.everOpened;
-      this.connected = true;
-      this.everOpened = true;
-      this.reconnectAttempts = 0;
+      if (this.ws !== socket) return;
       this.startHeartbeat();
-      this.onOpenChanged?.(true);
-      // 断线重连：携 token 恢复对局（服务端返回完整 gameState）
-      if (wasReconnect && this.hasJoinedRoom && this.roomCode && this.token) {
+      this.awaitingRoom = this.hasJoinedRoom && !!this.roomCode && !!this.token;
+      if (this.awaitingRoom) {
         this.sendRaw({ type: 'reconnect', roomCode: this.roomCode, token: this.token });
-        this.onReconnected?.();
+      } else {
+        this.markConnected();
       }
-      // 补发连接建立前缓冲的消息（首连与重连均适用）
-      this.flushOutbox();
     };
 
     socket.onmessage = (ev: MessageEvent) => {
-      this.dispatch(ev.data);
+      if (this.ws === socket) this.dispatch(ev.data);
     };
 
     socket.onerror = () => {
       // 错误后统一走 onclose 的重连逻辑
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      if (this.ws !== socket) return;
+      this.ws = null;
+      this.awaitingRoom = false;
       const was = this.connected;
       this.connected = false;
       this.stopHeartbeat();
+      if (event.code === 4001) {
+        this.disconnect();
+        this.onSessionLost?.('该座位已在另一条连接上恢复。');
+        return;
+      }
       if (was) this.onOpenChanged?.(false);
       if (!this.manualClosed) {
         this.scheduleReconnect();
@@ -214,7 +213,7 @@ export class NetClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.manualClosed) this.openSocket();
-    }, delay);
+    }, delay + Math.random() * 400);
   }
 
   private cancelReconnect(): void {
@@ -226,25 +225,28 @@ export class NetClient {
 
   // —— 内部：心跳 ——
 
-  /** 启动心跳：定时 ping + pong 超时检测 */
+  private markConnected(): void {
+    this.connected = true;
+    this.reconnectAttempts = 0;
+    this.onOpenChanged?.(true);
+    this.flushOutbox();
+  }
+
+  /** 连续错过心跳才重连，后台挂起后的第一次检查重新计时。 */
   private startHeartbeat(): void {
     this.stopHeartbeat();
+    this.lastHeartbeatAt = Date.now();
     this.heartbeatTimer = setInterval(() => {
-      this.send({ type: 'ping' });
-      this.pongDeadline = Date.now() + PONG_TIMEOUT_MS;
-    }, HEARTBEAT_INTERVAL_MS);
-    // 高频轻量检查 pong 是否超时
-    this.heartbeatChecker = setInterval(() => {
-      if (this.pongDeadline > 0 && Date.now() > this.pongDeadline) {
-        this.pongDeadline = 0;
-        // 视为链路死亡：主动关闭，onclose 触发重连
-        try {
-          this.ws?.close();
-        } catch (e) {
-          void e;
-        }
+      const now = Date.now();
+      if (now - this.lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS * 2) this.missedHeartbeats = 0;
+      this.lastHeartbeatAt = now;
+      if (this.missedHeartbeats >= MAX_MISSED_HEARTBEATS) {
+        this.ws?.close();
+        return;
       }
-    }, 2000);
+      this.missedHeartbeats++;
+      this.sendRaw({ type: 'ping' });
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private stopHeartbeat(): void {
@@ -252,11 +254,7 @@ export class NetClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    if (this.heartbeatChecker !== null) {
-      clearInterval(this.heartbeatChecker);
-      this.heartbeatChecker = null;
-    }
-    this.pongDeadline = 0;
+    this.missedHeartbeats = 0;
   }
 
   // —— 内部：分发 ——
@@ -272,6 +270,17 @@ export class NetClient {
       return; // 非 JSON 帧忽略
     }
     if (!msg || typeof msg.type !== 'string') return;
+    this.missedHeartbeats = 0;
+    if (this.awaitingRoom && msg.type === 'error' && ['E_NO_ROOM', 'E_TOKEN', 'E_IN_ROOM'].includes(msg.code)) {
+      this.disconnect();
+      this.onSessionLost?.(msg.message);
+      return;
+    }
+    if (this.awaitingRoom && (msg.type === 'gameState' || (msg.type === 'roomState' && msg.phase !== 'playing'))) {
+      this.awaitingRoom = false;
+      this.markConnected();
+      this.onReconnected?.();
+    }
     const set = this.handlers.get(msg.type);
     if (!set) return;
     for (const h of Array.from(set)) {

@@ -22,7 +22,7 @@ export class SafeArea extends Component {
   @property({ tooltip: '底部额外留白（设计单位）' })
   public extraBottom = 0;
 
-  protected onLoad(): void {
+  protected override onLoad(): void {
     this.apply();
     // 分辨率/屏幕旋转变化时重算（API 存在性守卫，兼容不同 Creator 小版本）
     if (typeof view.setResizeCallback === 'function') {
@@ -30,7 +30,7 @@ export class SafeArea extends Component {
     }
   }
 
-  protected onEnable(): void {
+  protected override onEnable(): void {
     this.apply();
   }
 

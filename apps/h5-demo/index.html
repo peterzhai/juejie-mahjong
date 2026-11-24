@@ -318,6 +318,9 @@
     }
     .table-prompt { grid-area: prompt; grid-column: 1 / -1; display: grid; place-items: center; min-width: 0; pointer-events: none; }
     .table-prompt:has(.table-controls :is(.claim-banner, .action-bar):not(:empty)) > .center-info { display: none; }
+    .table-prompt:has(#btn-wait-odds:not([hidden])) > .center-info { display: none; }
+    #btn-wait-odds { pointer-events: auto; color: var(--gold); font-size: var(--font-sm); }
+    #odds-details { margin-bottom: var(--space-3); }
     .table-controls {
       display: flex; align-items: center; justify-content: center; gap: var(--space-1) var(--space-2);
       width: max-content; max-width: 100%; min-width: 0; pointer-events: auto;
@@ -614,6 +617,7 @@
             <div class="seat-side right"><div id="seat-1" class="seat" data-testid="seat-1"></div></div>
             <div class="table-prompt">
               <div class="center-info" id="center-info" role="status"></div>
+              <button type="button" id="btn-wait-odds" aria-haspopup="dialog" hidden></button>
               <div class="table-controls">
                 <div id="claim-hint" class="claim-banner" data-testid="claim-hint" role="status"></div>
                 <div class="action-bar" id="action-bar" data-testid="action-bar" role="group" aria-label="出牌与响应"></div>
@@ -634,6 +638,16 @@
       <button aria-label="关闭结算" autofocus>✕</button>
     </form>
     <div id="settle" class="dialog-body lines" data-testid="settle-panel"></div>
+  </dialog>
+  <dialog id="odds-dialog" aria-labelledby="odds-title">
+    <form class="dialog-head" method="dialog">
+      <h2 id="odds-title">听牌概率</h2>
+      <button aria-label="关闭听牌概率" autofocus>✕</button>
+    </form>
+    <div class="dialog-body">
+      <div id="odds-details" class="lines"></div>
+      <p>按自己的手牌和公开牌估算。未见牌包含他家暗牌与死墙。流局前概率按听口和摸牌顺序保持不变计算。</p>
+    </div>
   </dialog>
   <dialog id="logs-dialog" aria-labelledby="logs-title">
     <form class="dialog-head" method="dialog">

@@ -9,6 +9,7 @@ import type { ResolvedFanConfig } from '@quejie/fan-config';
 import {
   MahjongGame,
   aiDecide,
+  estimateSelfDraw,
   recordReplay,
   type GameEvent,
   type HandResult,
@@ -16,7 +17,7 @@ import {
   type ReplayData,
   type Seat,
 } from '@quejie/mahjong-core';
-import type { PlayerInfo, RoomStateMsg, GameStateMsg, GameEventMsg, HandScoreRecord, SettlementView } from '@quejie/protocol';
+import type { PlayerInfo, RoomStateMsg, GameStateMsg, GameEventMsg, GameOverMsg, HandScoreRecord, SettlementView } from '@quejie/protocol';
 
 export interface RoomSession {
   seat: Seat;
@@ -57,6 +58,7 @@ export class Room {
   readonly aiDelayMs: number;
   private readonly onEvent: (roomCode: string, message: string) => void;
   private readonly handHistory: HandScoreRecord[] = [];
+  private lastCompleted: { game: MahjongGame; over: GameOverMsg } | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
@@ -151,6 +153,7 @@ export class Room {
       return;
     }
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+    this.lastCompleted = null;
     this.game = new MahjongGame({
       resolved: this.resolved,
       seed,
@@ -305,20 +308,18 @@ export class Room {
       chicken: s.chicken,
       lines: s.lines,
     }));
+    const over: GameOverMsg = {
+      type: 'gameOver',
+      outcome: result.outcome,
+      settlements,
+      deltas: result.deltas,
+      scores: [...this.scores],
+      dealerNext: result.dealerNext,
+      replayMeta: { ...result.replayMeta, hands: this.handCount },
+    };
+    this.lastCompleted = { game, over };
     this.pushStateAll();
-    for (const s of this.sessions) {
-      if (s?.connected) {
-        s.send({
-          type: 'gameOver',
-          outcome: result.outcome,
-          settlements,
-          deltas: result.deltas,
-          scores: this.scores,
-          dealerNext: result.dealerNext,
-          replayMeta: { ...result.replayMeta, hands: this.handCount },
-        } as never);
-      }
-    }
+    this.broadcast(over);
 
     this.dealer = result.dealerNext;
     this.game = null;
@@ -416,8 +417,7 @@ export class Room {
   }
 
   /** 个性化对局状态（仅本人手牌） */
-  gameStateFor(seat: Seat): GameStateMsg {
-    const game = this.game!;
+  gameStateFor(seat: Seat, game = this.game!): GameStateMsg {
     return {
       type: 'gameState',
       viewSeat: seat,
@@ -436,6 +436,7 @@ export class Room {
       })),
       hand: game.handTiles(seat),
       drewTile: game.phase === 'turn' && game.currentSeat === seat ? game.drewTile : null,
+      selfDrawOdds: estimateSelfDraw(game, seat),
       wallRemaining: game.wall.liveRemaining,
       deadWall: game.wall.deadWallCount,
       legalOptions: game.legalOptions(seat),
@@ -453,9 +454,14 @@ export class Room {
     }
   }
 
-  pushState(seat: Seat): void {
+  pushState(seat: Seat, includeSettlement = false): void {
     const s = this.sessions[seat];
-    if (s?.connected && this.game) s.send(this.gameStateFor(seat));
+    if (!s?.connected) return;
+    if (this.game) s.send(this.gameStateFor(seat));
+    else if (includeSettlement && this.lastCompleted) {
+      s.send(this.gameStateFor(seat, this.lastCompleted.game));
+      s.send(this.lastCompleted.over);
+    }
   }
 
   private broadcast(msg: unknown): void {

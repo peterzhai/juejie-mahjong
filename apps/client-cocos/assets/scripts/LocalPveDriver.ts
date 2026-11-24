@@ -8,6 +8,7 @@ import { _decorator, Component } from 'cc';
 import {
   MahjongGame,
   aiDecide,
+  estimateSelfDraw,
   type ActionOption,
   type Difficulty,
   type GameEvent,
@@ -47,6 +48,7 @@ if (typeof performance === 'undefined') {
 /** PVE 对局启动参数 */
 export interface LocalPveOptions {
   config?: FanConfig;
+  allowDiscardHu?: boolean;
   playerCount?: number;
   presetId?: string;
   seed?: number;
@@ -80,6 +82,7 @@ export class LocalPveDriver extends Component {
   private running = false;
   /** 累计分数（跨局连庄保留；引擎每局内部分数从 0 计） */
   private cumulative = [0, 0, 0, 0] as number[];
+  private handKongScores: number[] = [];
   /** 引擎事件游标（增量排水） */
   private eventCursor = 0;
   /** 下一局庄家（结算时更新） */
@@ -96,21 +99,25 @@ export class LocalPveDriver extends Component {
 
   // —— 对局生命周期 ——
 
-  /** 启动一局（首次或连庄下一局；resolved 配置按预设重建） */
   private savedOptions: LocalPveOptions = {};
   public startMatch(options: LocalPveOptions = {}): void {
-    this.savedOptions = { ...options };
+    this.savedOptions = { ...options, playerCount: options.playerCount ?? 4 };
+    this.cumulative = Array(this.savedOptions.playerCount).fill(0);
+    this.startHand(this.savedOptions);
+  }
+
+  private startHand(options: LocalPveOptions): void {
     this.stopMatch();
     const presetId = options.presetId ?? this.lastPreset;
     this.lastPreset = presetId;
-    if (options.config) this.customConfig = options.config;
+    this.customConfig = options.config ?? null;
     this.playerCount = options.playerCount ?? this.playerCount;
     if (this.customConfig) {
       const result = resolveFanConfig(this.customConfig);
       if (!result.resolved || !result.ok) throw new Error(result.errors.map(e => e.message).join('; '));
       this.resolved = result.resolved;
-    } else this.resolved = this.buildResolved(presetId);
-    if (this.cumulative.length !== this.playerCount) this.cumulative = Array(this.playerCount).fill(0);
+    } else this.resolved = this.buildResolved(presetId, options.allowDiscardHu ?? true);
+    this.handKongScores = Array(this.playerCount).fill(0);
     const dealer = options.dealer ?? 0;
     const names = options.playerNames ?? ['你', 'AI·下家', 'AI·对家', 'AI·上家'];
     const seed = options.seed ?? Math.floor(Math.random() * 1_000_000_000);
@@ -139,7 +146,7 @@ export class LocalPveDriver extends Component {
 
   /** 连庄开下一局（沿用累计分数与最近预设） */
   public startNextHand(): void {
-    this.startMatch({ ...this.savedOptions, dealer: this.lastDealerNext, presetId: this.lastPreset });
+    this.startHand({ ...this.savedOptions, seed: undefined, dealer: this.lastDealerNext, presetId: this.lastPreset });
   }
 
   /** 停止并清场（返回大厅/重开时调用） */
@@ -287,13 +294,9 @@ export class LocalPveDriver extends Component {
     if (!g) return;
     while (this.eventCursor < g.events.length) {
       const ev = g.events[this.eventCursor++]!;
-      // 分数：杠分与支付事件实时累加（结算事件直接同步引擎账本）
       if (ev.type === 'kongScore') {
-        this.cumulative[ev.from] = (this.cumulative[ev.from] ?? 0) - ev.amount;
-        this.cumulative[ev.to] = (this.cumulative[ev.to] ?? 0) + ev.amount;
-      } else if (ev.type === 'payment') {
-        this.cumulative[ev.from] = (this.cumulative[ev.from] ?? 0) - ev.amount;
-        this.cumulative[ev.to] = (this.cumulative[ev.to] ?? 0) + ev.amount;
+        this.handKongScores[ev.from]! -= ev.amount;
+        this.handKongScores[ev.to]! += ev.amount;
       }
       const mapped = toProtocolEvent(ev);
       if (mapped && this.onEvent) this.onEvent(mapped);
@@ -303,12 +306,12 @@ export class LocalPveDriver extends Component {
   /** 构建人类视角快照（结构与联机 GameStateMsg 同构，TableScene 无感知差异） */
   private buildSnapshot(): GameStateMsg {
     const g = this.game!;
-    const seats = [0, 1, 2, 3].map((seat) => {
-      const p = g.players[seat]!;
+    const seats = g.players.map((p) => {
       return {
-        seat,
+        seat: p.seat,
         name: p.name,
         handCount: p.hand.reduce((a, c) => a + c, 0),
+        revealedHand: g.phase === 'over' ? g.handTiles(p.seat) : undefined,
         melds: p.melds.map((m) => ({
           type: m.type,
           tile: m.tile,
@@ -316,10 +319,9 @@ export class LocalPveDriver extends Component {
         })),
         discards: [...p.discards],
         connected: true,
-        ai: seat !== HUMAN_SEAT,
+        ai: p.seat !== HUMAN_SEAT,
       };
     });
-    const hand = expandTiles(g.players[HUMAN_SEAT]!.hand, g);
     const drew =
       g.phase === 'turn' && g.currentSeat === HUMAN_SEAT ? g.drewTile : null;
     return {
@@ -329,14 +331,15 @@ export class LocalPveDriver extends Component {
       currentSeat: g.currentSeat,
       phase: g.phase,
       seats,
-      hand,
+      hand: g.handTiles(HUMAN_SEAT),
       drewTile: drew,
+      selfDrawOdds: estimateSelfDraw(g, HUMAN_SEAT),
       wallRemaining: g.wall.liveRemaining,
       deadWall: g.wall.deadWallCount,
       legalOptions: g.legalOptions(HUMAN_SEAT).map((o) => ({ type: o.type, tile: o.tile })),
       claimTile: g.claim ? g.claim.tile : undefined,
       claimFrom: g.claim ? g.claim.fromSeat : undefined,
-      scores: [...this.cumulative],
+      scores: this.cumulative.map((total, seat) => total + (g.phase === 'over' ? 0 : this.handKongScores[seat]!)),
       actionDeadlineMs: this.humanAutoPassTimerArmed ? this.humanClaimAutoPassMs : undefined,
     };
   }
@@ -355,6 +358,7 @@ export class LocalPveDriver extends Component {
     const deltas = [...result.deltas];
     this.cumulative = this.cumulative.map((c, i) => c + (deltas[i] ?? 0));
     this.lastDealerNext = result.dealerNext;
+    this.emitSnapshot();
     const msg: GameOverMsg = {
       type: 'gameOver',
       outcome: result.outcome,
@@ -374,10 +378,11 @@ export class LocalPveDriver extends Component {
   }
 
   /** 按预设构建已解析配置（与服务端 resolvedConfig 同口径：autoDisable + 校验 + resolve） */
-  private buildResolved(presetId: string): ResolvedFanConfig {
+  private buildResolved(presetId: string, allowDiscardHu: boolean): ResolvedFanConfig {
     const cfg = defaultFanConfig();
     cfg.tileSet = clonePreset(presetId);
     cfg.tileSet.preset = presetId;
+    cfg.rules = { ...cfg.rules, allowDiscardHu };
     if (cfg.tileSet.redCenterMode !== 'wild') {
       cfg.scoring.redCenterBonus.enabled = false;
     }
@@ -395,15 +400,6 @@ export class LocalPveDriver extends Component {
 }
 
 // —— 纯函数：类型转换（引擎 → 协议） ——
-
-/** 把手牌计数数组展开为 TileId 列表 */
-function expandTiles(counts: number[], g: MahjongGame): string[] {
-  const tiles: string[] = [];
-  counts.forEach((c, i) => {
-    for (let k = 0; k < c; k++) tiles.push(g.index.tile(i));
-  });
-  return tiles;
-}
 
 /** 引擎事件 → 协议事件（deal/payment/settle/drawGame 为内部事件，不映射） */
 function toProtocolEvent(ev: GameEvent): GameEventMsg['event'] | null {

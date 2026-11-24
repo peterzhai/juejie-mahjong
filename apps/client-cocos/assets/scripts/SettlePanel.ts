@@ -3,16 +3,11 @@
  * 四家本局分差与累计分。文本行方式渲染（滚动容器内 Label），由 TableScene 在 gameOver 时调用。
  */
 
-import { _decorator, Color, Component, Graphics, Label, Node, UITransform, UIOpacity } from 'cc';
+import { _decorator, Button, Component, Label, Node, ScrollView, UITransform } from 'cc';
 import type { GameOverMsg, SettlementView } from '@quejie/protocol';
+import { addLabel, addScrollableText, addTextButton, drawModal, GOLD, modalSize } from './ui/ModalText';
 
 const { ccclass, property } = _decorator;
-
-const PANEL_W = 760;
-const PANEL_H = 520;
-const COLOR_BG = new Color(16, 22, 30, 236);
-const COLOR_BORDER = new Color(210, 178, 110, 255);
-const COLOR_TEXT = new Color(238, 233, 220, 255);
 
 @ccclass('SettlePanel')
 export class SettlePanel extends Component {
@@ -26,17 +21,20 @@ export class SettlePanel extends Component {
 
   /** 底部按钮容器（程序化创建） */
   private btnRoot: Node | null = null;
+  private scroll: ScrollView | null = null;
+  private title: Label | null = null;
 
-  protected onLoad(): void {
-    this.ensureBackground();
-    this.ensureContentLabel();
+  protected override onLoad(): void {
+    this.layout();
     this.node.active = false;
   }
 
   /** 显示结算（本局可能多家胡：逐个 SettlementView 渲染） */
   public show(over: GameOverMsg, mySeat: number, seatNames: string[]): void {
     this.node.active = true;
+    this.node.setSiblingIndex(this.node.parent!.children.length - 1);
     const parts: string[] = [];
+    if (this.title) this.title.string = over.outcome === 'draw' ? '流局结算' : '结算明细';
 
     if (over.outcome === 'draw') {
       parts.push('—— 流局 ——');
@@ -60,8 +58,12 @@ export class SettlePanel extends Component {
     const nextDealer = over.dealerNext;
     parts.push(`下一局庄家: ${seatNames[nextDealer] ?? `座位${nextDealer}`}`);
 
-    if (this.contentLabel) this.contentLabel.string = parts.join('\n');
-    this.buildButtons(over);
+    if (this.contentLabel) {
+      this.contentLabel.string = parts.join('\n');
+      this.contentLabel.updateRenderData(true);
+    }
+    this.scroll?.scrollToTop();
+    this.buildButtons();
   }
 
   /** 隐藏面板 */
@@ -113,81 +115,50 @@ export class SettlePanel extends Component {
 
   // —— 程序化 UI ——
 
-  /** 半透明底板 + 金色描边（Graphics 免图片资源） */
-  private ensureBackground(): void {
-    const ut = this.node.getComponent(UITransform) ?? this.node.addComponent(UITransform);
-    ut.setContentSize(PANEL_W, PANEL_H);
-    let g = this.node.getComponent(Graphics);
-    if (!g) g = this.node.addComponent(Graphics);
-    g.clear();
-    g.fillColor = COLOR_BG;
-    g.roundRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, 18);
-    g.fill();
-    g.lineWidth = 3;
-    g.strokeColor = COLOR_BORDER;
-    g.roundRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, 18);
-    g.stroke();
-  }
-
   /** 内容文本（若编辑器未绑定则程序化创建） */
-  private ensureContentLabel(): void {
-    if (this.contentLabel) return;
-    const node = new Node('content');
-    const ut = node.addComponent(UITransform);
-    ut.setContentSize(PANEL_W - 60, PANEL_H - 130);
-    const label = node.addComponent(Label);
-    label.fontSize = 22;
-    label.lineHeight = 30;
-    label.overflow = Label.Overflow.CLAMP;
-    label.horizontalAlign = Label.HorizontalAlign.LEFT;
-    label.verticalAlign = Label.VerticalAlign.TOP;
-    label.color = COLOR_TEXT;
-    node.setPosition(0, 25);
-    this.node.addChild(node);
-    this.contentLabel = label;
+  public layout(): void {
+    const { width, height } = modalSize(this.node);
+    drawModal(this.node, width, height);
+    if (!this.title) this.title = addLabel(this.node, '结算明细', 0, 0, width - 52, 42, 29, GOLD);
+    this.title.node.setPosition(0, height / 2 - 38);
+    const content = this.contentLabel?.string ?? '';
+    if (this.scroll || !this.contentLabel) {
+      this.scroll?.node.removeFromParent();
+      this.scroll?.node.destroy();
+      const { label, scroll } = addScrollableText(this.node, width - 50, height - 165, -2);
+      this.contentLabel = label;
+      this.scroll = scroll;
+      label.string = content;
+      if (label.node.activeInHierarchy) label.updateRenderData(true);
+    }
+    if (this.node.active && this.btnRoot) this.buildButtons();
   }
 
-  /** 底部按钮：继续 / 返回大厅 */
-  private buildButtons(_over: GameOverMsg): void {
-    if (this.btnRoot) this.btnRoot.destroy();
+  private buildButtons(): void {
+    if (this.btnRoot) {
+      this.btnRoot.removeFromParent();
+      this.btnRoot.destroy();
+    }
     const root = new Node('buttons');
+    const { width, height } = modalSize(this.node);
     const ut = root.addComponent(UITransform);
-    ut.setContentSize(PANEL_W, 70);
-    root.setPosition(0, -PANEL_H / 2 + 45);
+    ut.setContentSize(width, 70);
+    root.setPosition(0, -height / 2 + 42);
     this.node.addChild(root);
     this.btnRoot = root;
 
-    if (this.onContinue) {
-      this.makeButton(root, '继续（连庄下一局）', -160, () => this.onContinue?.());
-    }
-    this.makeButton(root, '返回大厅', this.onContinue ? 40 : 0, () => this.onBackToLobby?.());
-    // 淡入
-    const op = this.node.getComponent(UIOpacity) ?? this.node.addComponent(UIOpacity);
-    op.opacity = 255;
+    const cell = (width - 36) / (this.onContinue ? 3 : 2);
+    const offset = cell * (this.onContinue ? 1 : .5);
+    this.makeButton(root, '关闭', -offset, cell - 8, () => this.hide());
+    this.makeButton(root, '返回大厅', offset, cell - 8, () => this.onBackToLobby?.());
+    if (this.onContinue) this.makeButton(root, '下一局', 0, cell - 8, () => {
+      this.hide();
+      this.onContinue?.();
+    }, true);
   }
 
-  /** 简单文字按钮（Graphics 底 + TOUCH_END） */
-  private makeButton(parent: Node, text: string, x: number, onTap: () => void): void {
-    const node = new Node(`btn_${text}`);
-    const ut = node.addComponent(UITransform);
-    ut.setContentSize(230, 56);
-    node.setPosition(x, 0);
-    const g = node.addComponent(Graphics);
-    g.fillColor = new Color(62, 92, 140, 255);
-    g.roundRect(-115, -28, 230, 56, 10);
-    g.fill();
-    const labelNode = new Node('text');
-    const lut = labelNode.addComponent(UITransform);
-    lut.setContentSize(218, 48);
-    const label = labelNode.addComponent(Label);
-    label.fontSize = 26;
-    label.overflow = Label.Overflow.SHRINK;
-    label.horizontalAlign = Label.HorizontalAlign.CENTER;
-    label.verticalAlign = Label.VerticalAlign.CENTER;
-    label.color = COLOR_TEXT;
-    label.string = text;
-    node.addChild(labelNode);
-    node.on(Node.EventType.TOUCH_END, onTap);
-    parent.addChild(node);
+  private makeButton(parent: Node, text: string, x: number, width: number, onTap: () => void, primary = false): void {
+    const button = addTextButton(parent, text, x, 0, width, primary, 46);
+    button.node.on(Button.EventType.CLICK, onTap);
   }
 }

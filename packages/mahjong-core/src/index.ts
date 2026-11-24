@@ -6,6 +6,7 @@ export * from './fans.js';
 export * from './scoring.js';
 export * from './settle.js';
 export * from './game.js';
+export * from './drawOdds.js';
 export * from './replay.js';
 export * from './ai/shanten.js';
 export * from './ai/agent.js';

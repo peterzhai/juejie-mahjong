@@ -152,6 +152,20 @@ describe('房间生命周期与全 AI 对局', () => {
     expect(second!.hand).toBe(2);
     expect(second!.scores).toEqual(first!.scores.map((score, seat) => score + second!.deltas[seat]!));
     client.close();
+
+    if (welcome.type !== 'welcome') throw new Error('缺少重连凭据');
+    const resumed = new TestClient();
+    try {
+      await resumed.open();
+      resumed.send({ type: 'reconnect', roomCode: next.roomCode, token: welcome.token });
+      const restored = await resumed.waitFor((m) => m.type === 'gameState', 5000);
+      expect(restored).toMatchObject({ phase: 'over', scores: second!.scores });
+      expect(await resumed.waitFor((m) => m.type === 'gameOver', 5000)).toMatchObject({
+        replayMeta: { hands: 2 }, scores: second!.scores,
+      });
+    } finally {
+      resumed.close();
+    }
   }, 180000);
 
   it('非法动作被拒绝并记录日志（验收 22）', async () => {
@@ -194,6 +208,34 @@ describe('房间生命周期与全 AI 对局', () => {
 });
 
 describe('断线重连与双端同步', () => {
+  it('新连接接管座位，旧连接关闭后新连接仍在线并收到对局', async () => {
+    const original = new TestClient();
+    const resumed = new TestClient();
+    try {
+      await Promise.all([original.open(), resumed.open()]);
+      original.send({ type: 'hello', name: '原昵称' });
+      original.send({ type: 'createRoom', playerCount: 2 });
+      const welcome = await original.waitFor((msg) => msg.type === 'welcome', 3000);
+      const lobby = await original.waitFor((msg) => msg.type === 'roomState', 3000);
+      if (welcome.type !== 'welcome' || lobby.type !== 'roomState') throw new Error('缺少房间凭据');
+      const closed = new Promise<number>((resolve) => original.ws.once('close', resolve));
+      resumed.send({ type: 'reconnect', roomCode: lobby.roomCode, token: welcome.token });
+      expect(await closed).toBe(4001);
+      expect(await resumed.waitFor((msg) => msg.type === 'welcome', 3000)).toMatchObject({
+        seat: welcome.seat, name: '原昵称',
+      });
+      resumed.send({ type: 'ping' });
+      await resumed.waitFor((msg) => msg.type === 'pong', 3000);
+      resumed.send({ type: 'startWithAi' });
+      expect(await resumed.waitFor((msg) => msg.type === 'gameState', 3000)).toMatchObject({
+        phase: 'turn', viewSeat: welcome.seat,
+      });
+    } finally {
+      original.close();
+      resumed.close();
+    }
+  });
+
   it('断线后用 token 重连，返回完整对局状态且手牌一致', async () => {
     const a = new TestClient();
     const b = new TestClient();

@@ -24,7 +24,7 @@ export class WallCounter extends Component {
   private wallRemaining = 0;
   private deadWall = 0;
 
-  protected onLoad(): void {
+  protected override onLoad(): void {
     const ut = this.node.getComponent(UITransform) ?? this.node.addComponent(UITransform);
     ut.setContentSize(BAR_W, BAR_H + 30);
     this.ensureLabel();

@@ -8,6 +8,7 @@ import type { ClientMessage, HandScoreRecord, ServerMessage, Seat } from '@queji
 import {
   MahjongGame,
   aiDecide,
+  estimateSelfDraw,
   mulberry32,
   type PlayerAction,
 } from '@quejie/mahjong-core';
@@ -15,6 +16,10 @@ import { defaultFanConfig, TILE_SET_PRESETS, clonePreset, autoDisableUnmetFans, 
 
 // —— 模式与状态 ——
 let ws: WebSocket | null = null;
+let roomToken = '';
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectAttempts = 0;
+let restoringRoom = false;
 let mySeat: Seat = 0;
 let roomCode = '';
 let handHistory: HandScoreRecord[] = [];
@@ -36,6 +41,9 @@ const logsDialog = $('logs-dialog') as HTMLDialogElement;
 const historyDialog = $('history-dialog') as HTMLDialogElement;
 const settingsDialog = $('settings-dialog') as HTMLDialogElement;
 const leaveDialog = $('leave-dialog') as HTMLDialogElement;
+const oddsDialog = $('odds-dialog') as HTMLDialogElement;
+const oddsButton = $('btn-wait-odds') as HTMLButtonElement;
+const drawPercent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 });
 const settlementButton = $('btn-settlement') as HTMLButtonElement;
 
 function log(msg: string): void {
@@ -52,6 +60,7 @@ function showPanel(id: typeof activePanel, updateHistory = true): void {
   const playing = id === 'table-panel';
   const changingView = activePanel !== id;
   activePanel = id;
+  if (!playing && oddsDialog.open) oddsDialog.close();
   document.body.classList.toggle('in-game', playing);
   $('home-panel').classList.toggle('hidden', id !== 'lobby');
   $('btn-home').classList.toggle('hidden', !playing);
@@ -101,6 +110,28 @@ function setRoomPending(pending: boolean): void {
 let roomRequestTimer: ReturnType<typeof setTimeout> | undefined;
 let roomRequestTrigger: HTMLElement | null = null;
 
+function closeOnlineConnection(): void {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  reconnectAttempts = 0;
+  restoringRoom = false;
+  roomToken = '';
+  const socket = ws;
+  ws = null;
+  socket?.close();
+}
+
+function scheduleRoomReconnect(): void {
+  if (!roomCode || !roomToken || reconnectTimer !== undefined) return;
+  restoringRoom = true;
+  $('conn-status').textContent = '正在恢复连接…';
+  const delay = Math.min(1000 * 2 ** reconnectAttempts++, 15000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    void connectWs(true).catch(() => scheduleRoomReconnect());
+  }, delay + Math.random() * 400);
+}
+
 function finishRoomRequest(): void {
   clearTimeout(roomRequestTimer);
   roomRequestTimer = undefined;
@@ -116,9 +147,7 @@ async function requestRoom(message: ClientMessage): Promise<void> {
   roomRequestTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   setRoomPending(true);
   roomRequestTimer = setTimeout(() => {
-    const socket = ws;
-    ws = null;
-    socket?.close();
+    closeOnlineConnection();
     finishRoomRequest();
     $('conn-status').textContent = '已断开';
     showError('等待房间响应超时，请重试。');
@@ -137,18 +166,34 @@ async function requestRoom(message: ClientMessage): Promise<void> {
   send(message);
 }
 
-function connectWs(): Promise<void> {
+function connectWs(resume = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${proto}://${location.host}`);
     const previous = ws;
     ws = socket;
     previous?.close();
-    socket.onopen = () => resolve();
+    socket.onopen = () => {
+      if (resume) socket.send(JSON.stringify({ type: 'reconnect', roomCode, token: roomToken } satisfies ClientMessage));
+      resolve();
+    };
     socket.onerror = () => reject(new Error('ws 连接失败'));
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       reject(new Error('ws 已断开'));
       if (ws !== socket) return;
+      ws = null;
+      if (event.code === 4001) {
+        closeOnlineConnection();
+        roomCode = '';
+        serverState = null;
+        showPanel('lobby');
+        showError('该座位已在另一条连接上恢复。');
+        return;
+      }
+      if (roomCode && roomToken) {
+        scheduleRoomReconnect();
+        return;
+      }
       if (roomRequestTimer !== undefined) finishRoomRequest();
       $('conn-status').textContent = '已断开';
       showError('联机连接已断开。');
@@ -161,18 +206,24 @@ function connectWs(): Promise<void> {
 }
 
 function send(msg: ClientMessage): void {
-  if (ws?.readyState === WebSocket.OPEN) {
+  if (!restoringRoom && ws?.readyState === WebSocket.OPEN) {
     if (activePanel !== 'lobby') showError('');
     ws.send(JSON.stringify(msg));
   } else {
-    showError('联机已断开，操作未发送。');
+    showError(restoringRoom ? '正在恢复对局，请稍后操作。' : '联机已断开，操作未发送。');
   }
 }
 
 function onServerMessage(msg: ServerMessage): void {
+  if (restoringRoom && (msg.type === 'gameState' || (msg.type === 'roomState' && msg.phase !== 'playing'))) {
+    restoringRoom = false;
+    reconnectAttempts = 0;
+    showError('');
+  }
   switch (msg.type) {
     case 'welcome':
       mySeat = msg.seat;
+      roomToken = msg.token;
       $('conn-status').textContent = `座位 ${msg.seat}`;
       break;
     case 'roomState':
@@ -228,6 +279,12 @@ function onServerMessage(msg: ServerMessage): void {
     case 'error':
       log(`[错误] ${msg.code}: ${msg.message}`);
       if (roomRequestTimer !== undefined) finishRoomRequest();
+      if (restoringRoom && (msg.code === 'E_NO_ROOM' || msg.code === 'E_TOKEN' || msg.code === 'E_IN_ROOM')) {
+        closeOnlineConnection();
+        roomCode = '';
+        serverState = null;
+        showPanel('lobby');
+      }
       showError(msg.message);
       break;
     default:
@@ -417,6 +474,33 @@ function highlightLastDiscard(): void {
 }
 
 /** 统一渲染牌桌（联机/本地共用 serverState 快照） */
+function renderSelfDrawOdds(state: NonNullable<typeof serverState>): void {
+  const odds = state.phase === 'over' ? undefined : state.selfDrawOdds;
+  oddsButton.hidden = !odds || state.legalOptions.length > 0;
+  if (!odds) {
+    if (oddsDialog.open) oddsDialog.close();
+    return;
+  }
+  oddsButton.textContent = `听牌 · 下次自摸 ${drawPercent.format(odds.nextDrawChance)}`;
+  if (!oddsDialog.open) return;
+  const rows = [
+    ['下次摸牌自摸', drawPercent.format(odds.nextDrawChance)],
+    ['预计流局前自摸', drawPercent.format(odds.selfDrawChance)],
+    ['预计还能摸牌', `${odds.drawsRemaining} 次`],
+    ...odds.waiting.map(({ tile, unseenCopies }) => [`听 ${tileLabel(tile)}`, `未见 ${unseenCopies} 张`]),
+  ];
+  $('odds-details').replaceChildren(...rows.map(([name, value]) => {
+    const row = document.createElement('div');
+    row.className = 'l';
+    const label = document.createElement('span');
+    label.textContent = name!;
+    const detail = document.createElement('b');
+    detail.textContent = value!;
+    row.append(label, detail);
+    return row;
+  }));
+}
+
 function renderTable(): void {
   if (!serverState) return;
   const active = document.activeElement as HTMLElement | null;
@@ -434,7 +518,9 @@ function renderTable(): void {
   const hint = $('claim-hint');
   let instruction = '';
   if (st.phase === 'claim') {
-    instruction = `${st.legalOptions.length ? '请选择响应' : '等待其他玩家响应'} · ${tileLabel(st.claimTile ?? '')}`;
+    if (st.legalOptions.length || !st.selfDrawOdds) {
+      instruction = `${st.legalOptions.length ? '请选择响应' : '等待其他玩家响应'} · ${tileLabel(st.claimTile ?? '')}`;
+    }
   } else if (st.phase === 'turn' && st.currentSeat === st.viewSeat) {
     instruction = ($('single-click') as HTMLInputElement).checked
       ? '点选手牌即可出牌'
@@ -453,6 +539,7 @@ function renderTable(): void {
   }
   const centerInfo = $('center-info');
   if (centerInfo.textContent !== turnInfo.textContent) centerInfo.replaceChildren(turnInfo);
+  renderSelfDrawOdds(st);
 
   const count = st.seats.length;
   const positions = count === 2 ? [0, 2] : count === 3 ? [0, 1, 3] : [0, 1, 2, 3];
@@ -787,9 +874,7 @@ function startLocal(): void {
     showError(`规则配置有误。 ${errors}`);
     return;
   }
-  const previous = ws;
-  ws = null;
-  previous?.close();
+  closeOnlineConnection();
   $('conn-status').textContent = '';
   const seed = Date.now() & 0x7fffffff;
   local = {
@@ -842,6 +927,7 @@ function renderLocal(): void {
     })),
     hand: game.handTiles(0),
     drewTile: game.phase === 'turn' && game.currentSeat === 0 ? game.drewTile : null,
+    selfDrawOdds: estimateSelfDraw(game, 0),
     wallRemaining: game.wall.liveRemaining,
     deadWall: game.wall.deadWallCount,
     legalOptions: game.legalOptions(0),
@@ -948,6 +1034,12 @@ function finishLocalHand(): void {
 }
 
 // —— 事件绑定 ——
+oddsButton.onclick = () => {
+  if (!serverState?.selfDrawOdds || oddsButton.hidden) return;
+  oddsDialog.showModal();
+  renderSelfDrawOdds(serverState);
+  oddsDialog.scrollTop = 0;
+};
 $('btn-logs').onclick = () => { logsDialog.showModal(); logsDialog.scrollTop = 0; };
 function openRoomHistory(): void {
   renderRoomHistory();
@@ -1006,9 +1098,7 @@ $('btn-leave').onclick = () => {
 leaveDialog.addEventListener('close', () => {
   if (leaveDialog.returnValue !== 'leave') return;
   send({ type: 'leaveRoom' });
-  const previous = ws;
-  ws = null;
-  previous?.close();
+  closeOnlineConnection();
   roomCode = '';
   roomPlayers = [];
   handHistory = [];

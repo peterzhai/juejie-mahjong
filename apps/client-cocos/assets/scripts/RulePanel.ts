@@ -3,17 +3,12 @@
  * 数据源：联机取 roomState.rulesSummary；本地 PVE 取 LocalPveDriver 的 resolved 配置。
  */
 
-import { _decorator, Color, Component, Graphics, Label, Node, UITransform } from 'cc';
+import { _decorator, Button, Component, Label, ScrollView } from 'cc';
 import type { ResolvedFanConfig } from '@quejie/fan-config';
 import type { RoomStateMsg } from '@quejie/protocol';
+import { addLabel, addScrollableText, addTextButton, drawModal, GOLD, modalSize } from './ui/ModalText';
 
 const { ccclass, property } = _decorator;
-
-const PANEL_W = 760;
-const PANEL_H = 520;
-const COLOR_BG = new Color(16, 22, 30, 236);
-const COLOR_BORDER = new Color(120, 160, 210, 255);
-const COLOR_TEXT = new Color(226, 230, 238, 255);
 
 type RulesSummary = RoomStateMsg['rulesSummary'];
 
@@ -25,10 +20,12 @@ export class RulePanel extends Component {
   /** 关闭按钮回调（TableScene 注入） */
   public onClose: (() => void) | null = null;
 
-  protected onLoad(): void {
-    this.ensureBackground();
-    this.ensureContentLabel();
-    this.ensureCloseButton();
+  private scroll: ScrollView | null = null;
+  private title: Label | null = null;
+  private closeButton: Button | null = null;
+
+  protected override onLoad(): void {
+    this.layout();
     this.node.active = false;
   }
 
@@ -38,8 +35,8 @@ export class RulePanel extends Component {
    */
   public show(summary: RulesSummary | null, resolved: ResolvedFanConfig | null): void {
     this.node.active = true;
+    this.node.setSiblingIndex(this.node.parent!.children.length - 1);
     const parts: string[] = [];
-    parts.push('—— 规则 ——');
 
     // 1) 牌张配置
     if (resolved) {
@@ -53,6 +50,7 @@ export class RulePanel extends Component {
     const redDesc = redMode === 'wild' ? '红中=万能牌（可替代任意牌；不可碰/明杠/补杠，可暗杠）' : redMode === 'normal' ? '红中为普通字牌' : redMode;
     const drawOnly = resolved?.redCenterDrawOnly ? '；红中只摸不打可不按万能计（drawOnly）' : '';
     parts.push(`红中规则: ${redMode}（${redDesc}${drawOnly}）`);
+    parts.push((resolved?.rules.allowDiscardHu ?? summary?.allowDiscardHu) === false ? '不点炮胡' : '允许点炮胡');
 
     // 3) 计分与封顶
     const scoringMode = resolved ? resolved.scoring.mode : (summary?.scoringMode ?? '-');
@@ -86,7 +84,11 @@ export class RulePanel extends Component {
     parts.push('十二张落地包牌 / 补杠被抢杠包三家 / 放杠杠上开花包三家（以房间配置为准）');
     parts.push('流局: 牌墙只剩死墙时流局，杠分退回，庄家连庄。');
 
-    if (this.contentLabel) this.contentLabel.string = parts.join('\n');
+    if (this.contentLabel) {
+      this.contentLabel.string = parts.join('\n');
+      this.contentLabel.updateRenderData(true);
+    }
+    this.scroll?.scrollToTop();
   }
 
   /** 隐藏面板 */
@@ -116,59 +118,28 @@ export class RulePanel extends Component {
 
   // —— 程序化 UI ——
 
-  private ensureBackground(): void {
-    const ut = this.node.getComponent(UITransform) ?? this.node.addComponent(UITransform);
-    ut.setContentSize(PANEL_W, PANEL_H);
-    let g = this.node.getComponent(Graphics);
-    if (!g) g = this.node.addComponent(Graphics);
-    g.clear();
-    g.fillColor = COLOR_BG;
-    g.roundRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, 18);
-    g.fill();
-    g.lineWidth = 3;
-    g.strokeColor = COLOR_BORDER;
-    g.roundRect(-PANEL_W / 2, -PANEL_H / 2, PANEL_W, PANEL_H, 18);
-    g.stroke();
-  }
-
-  private ensureContentLabel(): void {
-    if (this.contentLabel) return;
-    const node = new Node('content');
-    const ut = node.addComponent(UITransform);
-    ut.setContentSize(PANEL_W - 60, PANEL_H - 110);
-    const label = node.addComponent(Label);
-    label.fontSize = 20;
-    label.lineHeight = 28;
-    label.overflow = Label.Overflow.CLAMP;
-    label.horizontalAlign = Label.HorizontalAlign.LEFT;
-    label.verticalAlign = Label.VerticalAlign.TOP;
-    label.color = COLOR_TEXT;
-    node.setPosition(0, 15);
-    this.node.addChild(node);
-    this.contentLabel = label;
-  }
-
-  private ensureCloseButton(): void {
-    const node = new Node('btn_close');
-    const ut = node.addComponent(UITransform);
-    ut.setContentSize(120, 46);
-    node.setPosition(PANEL_W / 2 - 80, PANEL_H / 2 - 40);
-    const g = node.addComponent(Graphics);
-    g.fillColor = new Color(62, 92, 140, 255);
-    g.roundRect(-60, -23, 120, 46, 8);
-    g.fill();
-    const labelNode = new Node('text');
-    const lut = labelNode.addComponent(UITransform);
-    lut.setContentSize(110, 40);
-    const label = labelNode.addComponent(Label);
-    label.fontSize = 24;
-    label.overflow = Label.Overflow.SHRINK;
-    label.horizontalAlign = Label.HorizontalAlign.CENTER;
-    label.verticalAlign = Label.VerticalAlign.CENTER;
-    label.color = COLOR_TEXT;
-    label.string = '关闭';
-    node.addChild(labelNode);
-    node.on(Node.EventType.TOUCH_END, () => this.onClose?.());
-    this.node.addChild(node);
+  public layout(): void {
+    const { width, height } = modalSize(this.node);
+    drawModal(this.node, width, height);
+    if (!this.title) this.title = addLabel(this.node, '本桌规则', 0, 0, width - 50, 43, 29, GOLD);
+    this.title.node.setPosition(0, height / 2 - 38);
+    const content = this.contentLabel?.string ?? '';
+    if (this.scroll || !this.contentLabel) {
+      this.scroll?.node.removeFromParent();
+      this.scroll?.node.destroy();
+      const { label, scroll } = addScrollableText(this.node, width - 50, height - 165, -2);
+      this.contentLabel = label;
+      this.scroll = scroll;
+      label.string = content;
+      if (label.node.activeInHierarchy) label.updateRenderData(true);
+    }
+    if (!this.closeButton) {
+      this.closeButton = addTextButton(this.node, '关闭规则', 0, 0, 192, false, 46);
+      this.closeButton.node.on(Button.EventType.CLICK, () => {
+        this.hide();
+        this.onClose?.();
+      });
+    }
+    this.closeButton.node.setPosition(0, -height / 2 + 42);
   }
 }

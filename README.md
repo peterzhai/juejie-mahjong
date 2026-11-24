@@ -1,6 +1,6 @@
 # 《雀界·广东麻将》
 
-广东麻将（推倒胡）游戏实现：组合式牌张配置 + 全配置化番数与封顶 + 红中变。纯 TypeScript 规则引擎，前后端共用；Cocos Creator 客户端（源码）+ H5 调试客户端 + Node.js 权威服务端。
+广东麻将（推倒胡）游戏实现：组合式牌张配置 + 全配置化番数与封顶 + 红中变。纯 TypeScript 规则引擎，前后端共用；Cocos Creator 2D 客户端+ H5 调试客户端 + Node.js 权威服务端。
 
 ## 快速开始
 
@@ -26,7 +26,7 @@ packages/mahjong-core    规则引擎：胡牌/番型/计分/封顶/状态机/�
 packages/protocol        前后端共享消息协议
 apps/server              Node.js + ws：房间、权威裁决、AI 托管、断线重连、/health
 apps/h5-demo             H5 调试客户端（本地 PVE + 联机双模式，E2E 用）
-apps/client-cocos        Cocos Creator 4.x 客户端源码 + 接线说明（见其 README）
+apps/client-cocos        Cocos Creator 3.8.8 2D 工程（见其 BOOTSTRAP.md）
 tools                    验收报告生成器等脚本
 ```
 

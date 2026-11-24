@@ -1,9 +1,8 @@
-# apps/client-cocos —— 《雀界·广东麻将》Cocos Creator 4.x 客户端源码
+# 雀界·广东麻将 Cocos Creator 3.8.8 2D 工程
 
-> 本目录交付**完整可读源码 + 接线说明**（本机无 Cocos Creator 编辑器，不做构建）。
-> 所有脚本可直接放入 Cocos Creator 4.x 工程的 `assets/scripts/` 下使用，API 为
-> Cocos Creator 3.x/4.x 标准 API（`import { _decorator, Component, ... } from 'cc'`）。
-> 未创建 `.meta` 文件（由编辑器自动生成）、未创建 `package.json`（见下文依赖导入方案）。
+[启动说明](BOOTSTRAP.md)提供工程预览和构建入口。`assets/scenes/Main.scene` 已配置入口组件，支持单机、联机大厅和实拍牌面。
+
+下文记录把组件接入其他工程时的手动接线和资源配置。
 
 ---
 
@@ -37,7 +36,7 @@ apps/client-cocos/
 
 ---
 
-## 2. 从零到可运行：完整步骤清单
+## 2. 从零到可运行：完整步骤清单（移植组件时使用）
 
 ### 步骤 0：准备 monorepo 产物
 
@@ -56,9 +55,9 @@ npm test             # 确认引擎测试全绿（可选）
 > 注意：`@quejie/mahjong-core` 运行时依赖 `@quejie/fan-config`，
 > 因此两者必须同时可用（npm 依赖方式自动处理；复制方式两个都要拷）。
 
-### 步骤 1：新建 Cocos Creator 4.x 工程
+### 步骤 1：新建 Cocos Creator 3.8.8 工程
 
-1. 打开 Cocos Dashboard → **新建项目** → 模板选 **Empty(2D)**，引擎 4.x。
+1. 打开 Cocos Dashboard → **新建项目** → 模板选 **Empty(2D)**，引擎 3.8.8。
 2. 项目路径任意（建议与 monorepo 平级，避免被 npm workspaces 误收录）。
 3. 打开项目后：**项目 → 项目设置 → 项目数据** 设置设计分辨率 **1280×720**、
    适配方案勾选 **Fit Height（适配高度）**（横屏麻将）。
@@ -80,7 +79,7 @@ npm test             # 确认引擎测试全绿（可选）
 ```
 
 然后 `npm install`（或在 dashboard 打开时自动安装）。
-Cocos Creator 3.6+/4.x 会把 `node_modules` 中被脚本引用的纯 JS ESM 包一起打包，
+Cocos Creator 3.6+ 会把 `node_modules` 中被脚本引用的纯 JS ESM 包一起打包，
 `import { MahjongGame } from '@quejie/mahjong-core'` 直接可用。
 
 - 优点：版本随 monorepo 演进（改用 `file:` 协议或发布私有 npm registry 皆可）。
@@ -371,7 +370,7 @@ SoundManager 通过平台适配器按**相对包根路径**播放（`wx.createIn
 
 ## 10. 已知限制与占位说明
 
-- 牌面图、音效、字体均为**占位**：文字牌名 + 静默音源可跑通全流程，美术资源就位后按 §7/§8 替换。
+- 入口场景会载入实拍牌面，加载失败时显示文字牌名。音效可按 §7 接入。
 - 「继续（连庄下一局）」按钮仅本地 PVE 模式显示；联机多局由服务端连庄流转。
 - PVE 宣告窗口 10s 自动过（`humanClaimAutoPassMs` 可调），联机超时由服务端托管。
 - 一炮多响、抢杠暗杠十三幺等规则开关由房间预设决定，客户端只渲染 `legalOptions`，无本地硬编码。

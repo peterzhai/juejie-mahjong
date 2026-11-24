@@ -134,6 +134,14 @@ export interface LegalOption {
   tile?: string;
 }
 
+export interface SelfDrawOdds {
+  waiting: { tile: string; unseenCopies: number }[];
+  unseenTiles: number;
+  drawsRemaining: number;
+  nextDrawChance: number;
+  selfDrawChance: number;
+}
+
 export interface GameStateMsg {
   type: 'gameState';
   /** 视角座位 */
@@ -146,6 +154,8 @@ export interface GameStateMsg {
   hand: string[];
   /** 本人本回合摸到的牌，其他视角为 null */
   drewTile: string | null;
+  /** 本人听牌时，按自己手牌与公开牌估算的自摸概率。 */
+  selfDrawOdds?: SelfDrawOdds;
   wallRemaining: number;
   deadWall: number;
   legalOptions: LegalOption[];

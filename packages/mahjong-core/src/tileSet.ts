@@ -72,7 +72,7 @@ export class Wall {
     return this.order[--this.tail]!;
   }
 
-  /** 剩余可摸张数（不含死墙） */
+  /** 剩余牌墙张数（含死墙） */
   get liveRemaining(): number {
     return this.tail - this.head;
   }

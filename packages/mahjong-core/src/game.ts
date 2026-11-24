@@ -238,6 +238,24 @@ export class MahjongGame {
     return tiles;
   }
 
+  /** 会让指定的听牌手牌立即自摸的牌面，按当前规则判定。 */
+  winningDraws(seat: Seat, hand = this.players[seat]!.hand): number[] {
+    const { melds } = this.players[seat]!;
+    if (hand.reduce((total, count) => total + count, 0) !== 3 * (4 - melds.length) + 1) return [];
+    const owned = [...hand];
+    for (const meld of melds) owned[this.index.idx(meld.tile)]! += meld.type === 'peng' ? 3 : 4;
+    const trial = [...hand];
+    const options = this.winCheckOpts();
+    const winning: number[] = [];
+    for (let i = 0; i < trial.length; i++) {
+      if (owned[i]! >= this.index.copies[i]!) continue;
+      trial[i]!++;
+      if (checkWin(trial, melds, this.index, options).win) winning.push(i);
+      trial[i]!--;
+    }
+    return winning;
+  }
+
   // —— 合法动作 ——
   legalOptions(seat: Seat): ActionOption[] {
     if (this.phase === 'over') return [];

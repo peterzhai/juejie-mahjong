@@ -22,6 +22,8 @@ const PORT = Number(process.env.PORT ?? 8080);
 const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS ?? 15000);
 const CLAIM_TIMEOUT_MS = Number(process.env.CLAIM_TIMEOUT_MS ?? 8000);
 const AI_DELAY_MS = Number(process.env.AI_DELAY_MS ?? 120);
+const HEARTBEAT_MS = 25000;
+const REPLACED_SOCKET = 4001;
 
 const rooms = new Map<string, Room>();
 const logs: string[] = [];
@@ -39,6 +41,41 @@ interface ConnState {
   room: Room | null;
   seat: Seat | null;
   token: string | null;
+}
+
+const activeSockets = new WeakMap<RoomSession, ConnState>();
+
+function attachConnection(conn: ConnState, room: Room, seat: Seat, token: string): void {
+  const session = room.attach(seat, (msg) => sendTo(conn, msg))!;
+  const previous = activeSockets.get(session);
+  activeSockets.set(session, conn);
+  conn.room = room;
+  conn.seat = seat;
+  conn.token = token;
+  if (previous && previous !== conn) {
+    previous.room = null;
+    previous.seat = null;
+    previous.token = null;
+    previous.socket.close(REPLACED_SOCKET, 'Session resumed on another connection');
+  }
+}
+
+function detachConnection(conn: ConnState, leaving = false): void {
+  const { room, seat } = conn;
+  if (!room || seat === null) return;
+  const session = room.sessions[seat];
+  if (session && activeSockets.get(session) === conn) {
+    activeSockets.delete(session);
+    room.detach(seat);
+    if (leaving) {
+      room.setReady(seat, false);
+      logEvent(room.code, `座位 ${seat} 离开房间`);
+    }
+    room.broadcastRoomState();
+  }
+  conn.room = null;
+  conn.seat = null;
+  conn.token = null;
 }
 
 function resolvedConfig(preset: string, roomLevel: number, capType?: string, capFixed?: number, allowDiscardHu?: boolean): ResolvedFanConfig {
@@ -126,11 +163,7 @@ function handleCreateRoom(conn: ConnState, {
     sendTo(conn, { type: 'error', code: 'E_FULL', message: '房间已满' });
     return;
   }
-  conn.room = room;
-  conn.seat = joinResult.seat;
-  conn.token = joinResult.token;
-  const session = room.attach(joinResult.seat, (m) => sendTo(conn, m));
-  void session;
+  attachConnection(conn, room, joinResult.seat, joinResult.token);
   sendTo(conn, { type: 'welcome', token: joinResult.token, seat: joinResult.seat, name: conn.name });
   room.broadcastRoomState();
   logEvent(code, `房间创建（preset=${preset}, cap=${capType ?? 'fixed'}）`);
@@ -151,10 +184,7 @@ function handleJoinRoom(conn: ConnState, roomCode: string): void {
     sendTo(conn, { type: 'error', code: 'E_FULL', message: '房间已满' });
     return;
   }
-  conn.room = room;
-  conn.seat = joinResult.seat;
-  conn.token = joinResult.token;
-  room.attach(joinResult.seat, (m) => sendTo(conn, m));
+  attachConnection(conn, room, joinResult.seat, joinResult.token);
   sendTo(conn, { type: 'welcome', token: joinResult.token, seat: joinResult.seat, name: conn.name });
   room.broadcastRoomState();
   room.pushState(joinResult.seat);
@@ -172,13 +202,15 @@ function handleReconnect(conn: ConnState, roomCode: string, token: string): void
     sendTo(conn, { type: 'error', code: 'E_TOKEN', message: '令牌无效' });
     return;
   }
-  conn.room = room;
-  conn.seat = session.seat;
-  conn.token = token;
-  room.attach(session.seat, (m) => sendTo(conn, m));
-  sendTo(conn, { type: 'welcome', token, seat: session.seat, name: conn.name });
+  if (conn.room && (conn.room !== room || conn.seat !== session.seat)) {
+    sendTo(conn, { type: 'error', code: 'E_IN_ROOM', message: '已在一个房间中，请先离开' });
+    return;
+  }
+  conn.name = session.name;
+  attachConnection(conn, room, session.seat, token);
+  sendTo(conn, { type: 'welcome', token, seat: session.seat, name: session.name });
   room.broadcastRoomState();
-  room.pushState(session.seat);
+  room.pushState(session.seat, true);
   logEvent(roomCode, `座位 ${session.seat} 重连成功`);
 }
 
@@ -242,19 +274,9 @@ function handleMessage(conn: ConnState, raw: string): void {
     case 'reconnect':
       handleReconnect(conn, String(msg.roomCode), String(msg.token));
       break;
-    case 'leaveRoom': {
-      if (conn.room && conn.seat !== null) {
-        const room = conn.room;
-        room.detach(conn.seat);
-        room.setReady(conn.seat, false);
-        room.broadcastRoomState();
-        logEvent(room.code, `座位 ${conn.seat} 离开房间`);
-      }
-      conn.room = null;
-      conn.seat = null;
-      conn.token = null;
+    case 'leaveRoom':
+      detachConnection(conn, true);
       break;
-    }
     case 'ping':
       sendTo(conn, { type: 'pong' });
       break;
@@ -305,10 +327,29 @@ const httpServer = createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer });
+const unanswered = new WeakMap<WebSocket, number>();
+const heartbeat = setInterval(() => {
+  for (const socket of wss.clients) {
+    if (socket.readyState !== 1) continue;
+    const missed = unanswered.get(socket) ?? 0;
+    if (missed >= 2) {
+      socket.terminate();
+      continue;
+    }
+    unanswered.set(socket, missed + 1);
+    socket.ping();
+  }
+}, HEARTBEAT_MS);
+heartbeat.unref();
+wss.on('close', () => clearInterval(heartbeat));
 
 wss.on('connection', (socket: WebSocket) => {
   const conn: ConnState = { socket, name: '玩家', room: null, seat: null, token: null };
+  socket.on('pong', () => unanswered.delete(socket));
+  socket.on('error', () => socket.terminate());
   socket.on('message', (data: Parameters<typeof String>[number]) => {
+    if (socket.readyState !== 1) return;
+    unanswered.delete(socket);
     try {
       handleMessage(conn, String(data));
     } catch (e) {
@@ -316,12 +357,7 @@ wss.on('connection', (socket: WebSocket) => {
       sendTo(conn, { type: 'error', code: 'E_INTERNAL', message: '服务端内部错误' });
     }
   });
-  socket.on('close', () => {
-    if (conn.room && conn.seat !== null) {
-      conn.room.detach(conn.seat);
-      conn.room.broadcastRoomState();
-    }
-  });
+  socket.on('close', () => detachConnection(conn));
 });
 
 if (process.env.NODE_ENV !== 'test') {

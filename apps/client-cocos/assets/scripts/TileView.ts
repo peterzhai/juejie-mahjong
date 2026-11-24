@@ -3,7 +3,7 @@
  * 无图集资源时以文字牌面（如 "三筒"）渲染，接入牌面图后自动切换为图片显示。
  */
 
-import { _decorator, Color, Component, Label, Node, Sprite, SpriteFrame, UITransform, Vec3 } from 'cc';
+import { _decorator, Color, Component, Graphics, Label, Node, Sprite, SpriteFrame, UITransform, Vec3 } from 'cc';
 import { tileLabel } from '@quejie/mahjong-core';
 
 const { ccclass, property } = _decorator;
@@ -19,7 +19,8 @@ export function setTileFaceResolver(resolver: ((tileId: string) => SpriteFrame |
 const COLOR_TEXT = new Color(28, 28, 28, 255);
 const COLOR_RED = new Color(190, 32, 32, 255); // 红中
 const COLOR_GREEN = new Color(24, 118, 58, 255); // 绿发
-const COLOR_FACE_DOWN = new Color(60, 110, 170, 255); // 牌背
+const COLOR_FACE_DOWN = new Color(31, 121, 89, 255);
+const BACK_PHOTO_TINT = new Color(53, 255, 166);
 
 @ccclass('TileView')
 export class TileView extends Component {
@@ -39,6 +40,7 @@ export class TileView extends Component {
   /** 是否牌背（暗杠隐藏张 / 他人手牌背面） */
   private faceDown = false;
   private selected = false;
+  private background: Graphics | null = null;
 
   /**
    * 工厂方法：动态构建一张牌（无需预制体）。
@@ -57,6 +59,11 @@ export class TileView extends Component {
     sprite.sizeMode = Sprite.SizeMode.CUSTOM;
     sprite.type = Sprite.Type.SIMPLE;
     view.sprite = sprite;
+
+    const background = new Node('background');
+    background.addComponent(UITransform).setContentSize(width, height);
+    view.background = background.addComponent(Graphics);
+    node.addChild(background);
 
     const labelNode = new Node('face');
     const lut = labelNode.addComponent(UITransform);
@@ -101,22 +108,22 @@ export class TileView extends Component {
   public refreshFace(): void {
     const label = this.label;
     if (!label) return;
-    if (this.faceDown) {
-      label.string = '牌';
-      label.color = COLOR_FACE_DOWN;
-      if (this.sprite) this.sprite.spriteFrame = null;
-      label.node.active = true;
-      return;
-    }
-    const frame = faceResolver ? faceResolver(this.tileId) : null;
-    if (this.sprite && frame) {
+    const frame = faceResolver?.(this.faceDown ? 'back' : this.tileId) ?? null;
+    if (this.sprite) {
       this.sprite.spriteFrame = frame;
-      label.node.active = false;
-      return;
+      this.sprite.color = this.faceDown ? BACK_PHOTO_TINT : Color.WHITE;
     }
-    if (this.sprite) this.sprite.spriteFrame = null;
-    label.node.active = true;
-    label.string = safeLabel(this.tileId);
+    if (this.background) {
+      this.background.node.active = !frame;
+      this.background.clear();
+      if (!frame) {
+        this.background.fillColor = this.faceDown ? COLOR_FACE_DOWN : new Color(246, 239, 220);
+        this.background.roundRect(-this.tileWidth / 2, -this.tileHeight / 2, this.tileWidth, this.tileHeight, 4);
+        this.background.fill();
+      }
+    }
+    label.node.active = !frame && !this.faceDown;
+    label.string = this.faceDown ? '' : safeLabel(this.tileId);
     label.color = suitColor(this.tileId);
     if (this.selected) {
       this.node.setScale(new Vec3(1.14, 1.14, 1));

@@ -1,12 +1,13 @@
 /**
- * 规则型 AI（PRD 7.1）：评分 = 向听数 + 有效进张 + 危险度。
+ * 规则型 AI（PRD 7.1）：评分 = 向听数 + 下次摸到有效牌的概率 + 危险度。
  * 三档难度：easy 偏进攻（多碰杠），hard 加防守与舍牌记忆。
  * 只走合法动作接口（legalOptions），单步限时。
  */
 
 import type { TileId } from '@quejie/fan-config';
 import type { MahjongGame, ActionOption, PlayerAction, Seat } from '../game.js';
-import { shantenOf, ukeireOf } from './shanten.js';
+import { chanceToHit, drawPool } from '../drawOdds.js';
+import { shantenOf } from './shanten.js';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
 
@@ -41,17 +42,6 @@ export function aiDecide(game: MahjongGame, seat: Seat, config: AiConfig): Playe
 
   // 3) 回合：暗杠/补杠/出牌
   return decideTurn(game, seat, options, config, deadline, rng);
-}
-
-function visibleCountsOf(game: MahjongGame, seat: Seat): number[] {
-  const counts = new Array<number>(game.index.ids.length).fill(0);
-  for (const p of game.players) {
-    for (const t of p.discards) counts[game.index.idx(t)]!++;
-    for (const m of p.melds) counts[game.index.idx(m.tile)]! += 3;
-  }
-  // 自己的手牌不计入"可见"（进张计算按剩余含自家）
-  void seat;
-  return counts;
 }
 
 function handCounts(game: MahjongGame, seat: Seat): number[] {
@@ -125,7 +115,6 @@ function decideTurn(
   deadline: number,
   rng: () => number,
 ): PlayerAction {
-  void deadline;
   // 暗杠/补杠：直接执行（额外补牌 + 杠分）
   const ankang = options.find((o) => o.type === 'ankang');
   if (ankang) return ankang;
@@ -137,7 +126,8 @@ function decideTurn(
 
   const counts = handCounts(game, seat);
   const melds = game.players[seat]!.melds.length;
-  const visible = visibleCountsOf(game, seat);
+  // 候选舍牌仍属于已知牌，所有候选共用出牌前的未见牌池。
+  const { visible, remaining, unseenTiles } = drawPool(game, seat);
 
   // 各弃牌候选的 (向听, 进张, 危险度)
   const evaluated = discards.map((d) => {
@@ -145,60 +135,61 @@ function decideTurn(
     const trial = [...counts];
     trial[idx]!--;
     const s = shantenOf(trial, melds, game.index);
-    return { option: d, idx, shanten: s, ukeire: 0, danger: 0 };
+    return { option: d, idx, trial, shanten: s, chance: 0 };
   });
 
-  // 防守判断（hard）：自家向听 ≥ 3 且他家接近成牌（副露 ≥ 3 组）→ 弃最安全牌
-  const threat = game.players.some(
-    (p, i) => i !== seat && p.melds.length >= 3,
-  );
+  const minShanten = Math.min(...evaluated.map((e) => e.shanten));
+  const opponents = game.players.filter((player) => player.seat !== seat);
+  const canDealIn = game.resolved.rules.allowDiscardHu !== false;
+  const lateHand = game.wall.liveRemaining - game.wall.deadWallCount <= game.playerCount * 7;
   const hardFold =
+    canDealIn &&
     config.difficulty === 'hard' &&
-    Math.min(...evaluated.map((e) => e.shanten)) >= 3 &&
-    threat;
+    minShanten >= 2 &&
+    (lateHand || opponents.some((player) => player.melds.length >= 3));
+  const danger = (idx: number) => {
+    if (!canDealIn) return 0;
+    const risk = dangerOf(game, idx, visible);
+    if (config.difficulty !== 'hard') return risk;
+    const tile = game.index.tile(idx);
+    return Math.max(...opponents.map((player) =>
+      risk * (player.discards.slice(-4).includes(tile) ? 0.45 : 1) * (1 + 0.2 * player.melds.length),
+    ));
+  };
 
   if (hardFold) {
     let safest = evaluated[0]!;
     for (const e of evaluated) {
-      if (dangerOf(game, e.idx, seat) < dangerOf(game, safest.idx, seat)) safest = e;
+      if (danger(e.idx) < danger(safest.idx)) safest = e;
     }
     return safest.option;
   }
 
-  // 常规：向听优先 → 进张 → 危险度
-  const minShanten = Math.min(...evaluated.map((e) => e.shanten));
-  const topShanten = evaluated.filter((e) => e.shanten === minShanten).slice(0, 3);
-  // 进张只对最优向听的前 3 个候选计算（限时）
+  // 常规：向听优先 → 摸到有效牌的概率 → 危险度
+  const topShanten = evaluated.filter((e) => e.shanten === minShanten);
+  const checked: typeof topShanten = [];
   for (const e of topShanten) {
-    e.ukeire = ukeireOf(
-      (() => {
-        const trial = [...counts];
-        trial[e.idx]!--;
-        return trial;
-      })(),
-      melds,
-      game.index,
-      visible,
-      4,
-      deadline,
-    );
-    if (performance.now() > deadline) break;
+    if (game.wall.exhausted || performance.now() >= deadline) break;
+    const hits = minShanten <= 0
+      ? game.winningDraws(seat, e.trial).reduce((total, idx) => total + remaining[idx]!, 0)
+      : effectiveCopies(game, e.trial, melds, e.shanten, remaining, deadline);
+    if (hits === undefined) break;
+    e.chance = chanceToHit(unseenTiles, hits, 1);
+    checked.push(e);
+    if (minShanten > 0 && checked.length >= 3) break;
   }
-  const pool = topShanten.length > 0 ? topShanten : evaluated.slice(0, 3);
-  for (const e of pool) {
-    e.danger = dangerOf(game, e.idx, seat);
-  }
-  // 统一评分：向听 >> 进张 >> 危险度 >> 抖动（难度加权）
+  const pool = checked.length ? checked : topShanten.slice(0, 3);
+  const maxChance = Math.max(...pool.map((e) => e.chance));
+  const chanceWeight = game.resolved.tileMath.totalTiles * 100;
   // easy：忽略危险度 + 大抖动（进攻不精细）；normal：弱危险度；hard：强危险度且无抖动
   const w = DIFFICULTY_WEIGHTS[config.difficulty];
-  const maxUkeire = Math.max(...pool.map((e) => e.ukeire));
   let best = pool[0]!;
   let bestScore = Number.POSITIVE_INFINITY;
   for (const e of pool) {
+    if (minShanten <= 0 && maxChance > 0 && e.chance === 0 && config.difficulty !== 'hard') continue;
     const score =
-      e.shanten * 100000 +
-      (maxUkeire - e.ukeire) * 100 +
-      e.danger * w.danger +
+      (maxChance - e.chance) * chanceWeight +
+      danger(e.idx) * w.danger +
       rng() * w.jitter;
     if (score < bestScore) {
       bestScore = score;
@@ -206,6 +197,21 @@ function decideTurn(
     }
   }
   return best.option;
+}
+
+function effectiveCopies(
+  game: MahjongGame, hand: number[], melds: number, shanten: number, remaining: number[], deadline: number,
+): number | undefined {
+  const trial = [...hand];
+  let hits = 0;
+  for (let i = 0; i < trial.length; i++) {
+    if (remaining[i]! === 0) continue;
+    if (performance.now() >= deadline) return undefined;
+    trial[i]!++;
+    if (shantenOf(trial, melds, game.index) < shanten) hits += remaining[i]!;
+    trial[i]!--;
+  }
+  return hits;
 }
 
 interface DifficultyWeights {
@@ -224,22 +230,15 @@ const DIFFICULTY_WEIGHTS: Record<Difficulty, DifficultyWeights> = {
 }
 
 /** 危险度：中张 > 幺九 > 字牌；可见张数越多越安全；他家副露越多越危险 */
-function dangerOf(game: MahjongGame, idx: number, _selfSeat: Seat): number {
-  const tile = game.index.tile(idx);
+function dangerOf(game: MahjongGame, idx: number, visibleCounts: number[]): number {
   const rank = game.index.rankOf(idx);
-  const visible = visibleCountsOf(game, _selfSeat)[idx] ?? 0;
+  const visible = visibleCounts[idx] ?? 0;
   let danger: number;
   if (rank === null) danger = 30; // 字牌
   else if (rank === 1 || rank === 9) danger = 45;
   else if (rank === 2 || rank === 8) danger = 70;
   else danger = 100; // 中张
   danger -= visible * 18; // 可见越多越安全（振听近似）
-  if (visible >= 3) danger = 0; // 三张可见不可能再胡（普通牌）
-  const meldThreat = game.players.reduce(
-    (a, p) => Math.max(a, p.melds.length),
-    0,
-  );
-  danger *= 0.5 + 0.25 * meldThreat;
-  void tile;
+  if (rank === null && visible >= 3) danger = 0;
   return Math.max(danger, 0);
 }
