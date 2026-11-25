@@ -408,7 +408,8 @@ export class GameManager extends Component {
     if (this.lastGameOver === msg) return;
     this.lastGameOver = msg;
     this.phase = 'settle';
-    const hand = typeof msg.replayMeta.hands === 'number' ? msg.replayMeta.hands : (this.handHistory.at(-1)?.hand ?? 0) + 1;
+    const previousHand = this.handHistory[this.handHistory.length - 1]?.hand ?? 0;
+    const hand = typeof msg.replayMeta.hands === 'number' ? msg.replayMeta.hands : previousHand + 1;
     if (!this.handHistory.some((item) => item.hand === hand)) {
       this.handHistory.push({ hand, outcome: msg.outcome, winnerSeats: msg.settlements.map((item) => item.winnerSeat), deltas: [...msg.deltas], scores: [...msg.scores] });
     }

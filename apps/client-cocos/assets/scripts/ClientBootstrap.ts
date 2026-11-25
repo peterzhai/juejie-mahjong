@@ -5,7 +5,9 @@ import {
 } from 'cc';
 import { GameManager } from './GameManager';
 import { TableScene } from './TableScene';
+import { getPlatformAdapter } from './platform/IPlatform';
 import { addLabel, addScrollableText, addTextButton, card, drawModal, GOLD, MUTED, TEXT } from './ui/ModalText';
+import { layoutHeader, type ScreenObstructions } from './ui/ScreenLayout';
 import { Tips } from './ui/Tips';
 
 const { ccclass } = _decorator;
@@ -53,6 +55,8 @@ export class ClientBootstrap extends Component {
   private width = 1280;
   private height = 720;
   private portrait = false;
+  private obstructions: ScreenObstructions | null = null;
+  private stopWatchingObstructions?: () => void;
   private boardPhoto: SpriteFrame | null = null;
   private lobbyRules: Label | null = null;
   private roomCode = '';
@@ -84,6 +88,7 @@ export class ClientBootstrap extends Component {
     view.resizeWithBrowserSize(true);
     screen.on('window-resize', this.reflow, this);
     screen.on('orientation-change', this.reflow, this);
+    this.stopWatchingObstructions = getPlatformAdapter().watchScreenObstructions?.(() => this.scheduleOnce(this.reflow));
     this.reflow();
     resources.load('mahjong-table/texture', Texture2D, (error, texture) => {
       if (error || !texture || !this.isValid) return;
@@ -100,6 +105,7 @@ export class ClientBootstrap extends Component {
   protected override onDestroy(): void {
     screen.off('window-resize', this.reflow, this);
     screen.off('orientation-change', this.reflow, this);
+    this.stopWatchingObstructions?.();
     if (this.gm?.isValid) {
       this.gm.navigate = this.gm.openSettings = this.gm.openHistory = this.gm.openLogs = this.gm.confirmLeave = null;
     }
@@ -107,24 +113,52 @@ export class ClientBootstrap extends Component {
 
   private reflow(): void {
     const size = screen.windowSize;
+    if (size.width <= 0 || size.height <= 0) return;
+    const adapter = getPlatformAdapter();
+    const wechat = adapter.kind === 'wechat';
     const portrait = size.height > size.width;
-    const width = portrait ? 540 : Math.max(1120, Math.min(1580, Math.round(size.width / Math.max(1, size.height) * 720)));
-    const height = portrait ? Math.max(920, Math.min(1160, Math.round(size.height / Math.max(1, size.width) * width))) : 720;
-    if (this.page && width === this.width && height === this.height) return;
+    const aspect = size.width / size.height;
+    const width = wechat
+      ? (portrait ? Math.max(540, 920 * aspect) : Math.max(1120, 720 * aspect))
+      : (portrait ? 540 : Math.max(1120, Math.min(1580, Math.round(aspect * 720))));
+    const height = wechat ? width / aspect : (portrait ? Math.max(920, Math.min(1160, Math.round(width / aspect))) : 720);
+    const resized = !this.page || width !== this.width || height !== this.height;
+    if (resized) view.setDesignResolutionSize(width, height, ResolutionPolicy.SHOW_ALL);
+    const obstructions = wechat ? this.readObstructions(width, height) : null;
+    if (!resized && JSON.stringify(this.obstructions) === JSON.stringify(obstructions)) return;
     this.captureFields();
     const open = this.currentOverlay;
     this.portrait = portrait;
     this.width = width;
     this.height = height;
-    view.setDesignResolutionSize(width, height, ResolutionPolicy.SHOW_ALL);
+    this.obstructions = obstructions;
     if (this.tableView && this.page) {
       this.paintPage(this.page);
-      this.tableView.layout(width, height);
+      this.tableView.layout(width, height, obstructions);
       if (open) this.showOverlay(open);
     } else {
       this.showPage(this.currentPage);
       if (open) this.showOverlay(open);
     }
+  }
+
+  private readObstructions(width: number, height: number): ScreenObstructions {
+    const origin = view.getVisibleOrigin();
+    const safe = sys.getSafeAreaRect(false);
+    const inset = (value: number, extent: number): number => value > 0 && value < extent / 4 ? value : 0;
+    const top = inset(height - (safe.y + safe.height - origin.y), height);
+    const menu = getPlatformAdapter().getMenuButtonRect?.();
+    const unitsPerPoint = width * screen.devicePixelRatio / screen.windowSize.width;
+    const fallbackTop = Math.max(top, 10 * unitsPerPoint);
+    return {
+      top,
+      bottom: inset(safe.y - origin.y, height),
+      left: inset(safe.x - origin.x, width),
+      right: inset(width - (safe.x + safe.width - origin.x), width),
+      menu: menu
+        ? { left: menu.left * width - width / 2, top: menu.top * height, bottom: menu.bottom * height }
+        : { left: width / 2 - 98 * unitsPerPoint, top: fallbackTop, bottom: fallbackTop + 34 * unitsPerPoint },
+    };
   }
 
   private captureFields(): void {
@@ -181,7 +215,10 @@ export class ClientBootstrap extends Component {
 
   private lobby(page: Node): void {
     const w = this.portrait ? this.width - 36 : Math.min(this.width - 92, 1160);
-    const top = this.height / 2;
+    const header = this.obstructions && layoutHeader(this.width, this.height, this.obstructions, 275, 0, 40, (this.width - w) / 2, 31);
+    const top = this.height / 2 - Math.max(0, (header?.bottom ?? 51) - 51);
+    const headerRight = header?.controlsRight ?? w / 2;
+    const headerY = header?.y ?? top - 31;
     const heroHeight = this.portrait ? 245 : 254;
     const heroY = top - 66 - heroHeight / 2;
     const hero = card(page, 'Hero', 0, heroY, w, heroHeight, FELT);
@@ -199,8 +236,8 @@ export class ClientBootstrap extends Component {
     const subtitle = this.portrait ? '好友房 · 单机练习' : '红中变 · 好友房 · 单机练习';
     addLabel(hero, title, -w * .28, 18, textW, 96, this.portrait ? 32 : 48, GOLD);
     addLabel(hero, subtitle, -w * .28, -52, textW, 40, 19, TEXT);
-    this.button(page, '玩法设置', w / 2 - 70, top - 31, 140, () => this.showOverlay('rules'), false, 40);
-    this.button(page, '对局日志', w / 2 - 210, top - 31, 130, () => this.showLogs(), false, 40);
+    this.button(page, '玩法设置', headerRight - 70, headerY, 140, () => this.showOverlay('rules'), false, 40);
+    this.button(page, '对局日志', headerRight - 210, headerY, 130, () => this.showLogs(), false, 40);
 
     const fieldsY = heroY - heroHeight / 2 - 64;
     const fields = card(page, '开局信息', 0, fieldsY, w, 104);
@@ -278,9 +315,10 @@ export class ClientBootstrap extends Component {
     const state = this.gm.roomState;
     if (!state) return;
     const w = this.portrait ? this.width - 36 : 950;
-    const top = this.height / 2;
-    this.button(page, '离开房间', w / 2 - 80, top - 32, 160, () => this.showOverlay('leave'), false, 40);
-    this.button(page, '房间战绩', -w / 2 + 80, top - 32, 160, () => this.showOverlay('history'), false, 40);
+    const header = this.obstructions && layoutHeader(this.width, this.height, this.obstructions, 160, 160, 40, (this.width - w) / 2, 32);
+    const top = this.height / 2 - Math.max(0, (header?.bottom ?? 52) - 52);
+    this.button(page, '离开房间', (header?.controlsRight ?? w / 2) - 80, header?.y ?? top - 32, 160, () => this.showOverlay('leave'), false, 40);
+    this.button(page, '房间战绩', header?.leadingX ?? -w / 2 + 80, header?.leadingY ?? top - 32, 160, () => this.showOverlay('history'), false, 40);
     const hero = card(page, '房间信息', 0, top - 153, w, 168);
     addLabel(hero, `房间 ${state.roomCode}`, 0, 30, w - 36, 58, 38, GOLD);
     const summary = state.rulesSummary;
@@ -329,7 +367,7 @@ export class ClientBootstrap extends Component {
     }
     this.tableView = controller;
     root.active = true;
-    controller.layout(this.width, this.height);
+    controller.layout(this.width, this.height, this.obstructions);
   }
 
   private edit(parent: Node, placeholder: string, value: string, x: number, y: number, w: number, h: number, font: number, multiline = false): EditBox {
@@ -423,7 +461,7 @@ export class ClientBootstrap extends Component {
   private historyText(): string {
     const names = this.gm.matchNames;
     const history = this.gm.handHistory;
-    const totals = history.at(-1)?.scores ?? this.gm.lastGameState?.scores ?? [];
+    const totals = history[history.length - 1]?.scores ?? this.gm.lastGameState?.scores ?? [];
     const signed = (score: number) => score > 0 ? `+${score}` : String(score);
     const lines = [`${this.gm.roomState ? `房间 ${this.gm.roomState.roomCode} · ` : ''}已结算 ${history.length} 局`, '', '累计分'];
     lines.push(names.map((name, i) => `${name} ${signed(totals[i] ?? 0)}`).join('   /   '));

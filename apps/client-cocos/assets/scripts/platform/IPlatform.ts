@@ -44,6 +44,12 @@ export interface IPlatform {
   /** 物理像素安全区（微信刘海屏 / 浏览器窗口） */
   getSafeAreaPx(): SafeAreaPx;
 
+  /** 微信胶囊相对游戏窗口的位置，数值为窗口宽高的比例。 */
+  getMenuButtonRect?(): { left: number; top: number; bottom: number } | null;
+
+  /** 某些设备旋转 180° 时窗口尺寸相同，仍需重算遮挡区域。 */
+  watchScreenObstructions?(callback: () => void): () => void;
+
   /** 创建音源（src 为相对包根的音频路径，如 'audio/hu.mp3'） */
   createAudio(src: string): IAudioHandle | null;
 

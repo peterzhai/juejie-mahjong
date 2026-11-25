@@ -2,6 +2,7 @@
 
 import type { TileFaceConfig, TileSetConfig } from './schema.js';
 import type { HonorFaceName, SuitFaceName } from './tiles.js';
+import { cloneConfigData } from './cloneConfigData.js';
 
 export interface TileSetPreset extends TileSetConfig {
   preset: string;
@@ -151,5 +152,5 @@ export function getPreset(id: string): TileSetPreset {
 }
 
 export function clonePreset(id: string): TileSetPreset {
-  return structuredClone(getPreset(id));
+  return cloneConfigData(getPreset(id));
 }

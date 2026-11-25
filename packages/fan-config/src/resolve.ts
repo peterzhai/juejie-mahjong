@@ -12,6 +12,7 @@ import { computeTileMath, faceEnabled, enabledSuitCount, anyHonorEnabled, faceCo
 import { validateFanConfig, type ValidateOptions, type ValidationIssue } from './validate.js';
 import { RED_CENTER_TILE, TERMINALS_AND_HONORS_13, tileToFaceSafe, tileLabel } from './tiles.js';
 import type { FaceName } from './tiles.js';
+import { cloneConfigData } from './cloneConfigData.js';
 
 export interface ResolvedFanEntry {
   id: string;
@@ -160,7 +161,7 @@ export function resolveFanConfig(config: FanConfig, options: ValidateOptions = {
 
   const resolved: ResolvedFanConfig = {
     version: config.version,
-    tileSet: structuredClone(tileSet),
+    tileSet: cloneConfigData(tileSet),
     tileSetPresetId: tileSet.preset,
     tileMath,
     redCenterMode,
@@ -168,8 +169,8 @@ export function resolveFanConfig(config: FanConfig, options: ValidateOptions = {
     redCenterDrawOnly: tileSet.redCenterDrawOnly ?? false,
     sevenPairsWithWild: tileSet.sevenPairsWithWild ?? true,
     fans,
-    bonusFans: structuredClone(config.bonusFans),
-    scoring: structuredClone(config.scoring),
+    bonusFans: cloneConfigData(config.bonusFans),
+    scoring: cloneConfigData(config.scoring),
     rules: {
       ...DEFAULT_RULES,
       ...config.rules,
@@ -189,7 +190,7 @@ export interface AutoDisableResult {
 
 /** 预设应用流程：将依赖不满足且 enabled 的番型自动禁用（PRD 5.5/12：如十三幺因缺发白自动禁用） */
 export function autoDisableUnmetFans(config: FanConfig): AutoDisableResult {
-  const out = structuredClone(config);
+  const out = cloneConfigData(config);
   const disabled: AutoDisableResult['disabled'] = [];
   const disabledIds = new Set<string>();
   for (const fan of out.fans) {

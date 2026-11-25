@@ -18,6 +18,7 @@ import { loadTilePhotos } from './TilePhotos';
 import { SoundManager } from './SoundManager';
 import { Tips } from './ui/Tips';
 import { addLabel, addScrollableText, addTextButton, drawModal, GOLD, MUTED, modalSize } from './ui/ModalText';
+import { layoutHeader, type ScreenObstructions } from './ui/ScreenLayout';
 
 const { ccclass, property } = _decorator;
 
@@ -104,25 +105,37 @@ export class TableScene extends Component {
   private centerY = 52;
   private actionY = -195;
 
-  public layout(w: number, h: number): void {
+  public layout(w: number, h: number, screen: ScreenObstructions | null = null): void {
     this.width = w;
     this.height = h;
     this.node.getComponent(UITransform)?.setContentSize(w, h);
     const portrait = h > w;
     const bottom = -h / 2;
     const top = h / 2;
+    const buttons = [this.homeButton, this.btnRule, this.logButton, this.settlementButton, this.scoreButton];
+    const buttonScale = portrait ? .73 : 1;
+    const buttonWidth = 104 * buttonScale;
+    const buttonStep = portrait ? 80 : 113;
+    const wallWidth = portrait ? 118 : 240;
+    const header = screen && layoutHeader(
+      w, h, screen, buttonWidth + (buttons.length - 1) * buttonStep, wallWidth, 43, 10, 35,
+    );
+    const handLift = Math.max(0, (screen?.bottom ?? 0) - 28);
     this.centerY = portrait ? 46 : 38;
-    this.actionY = bottom + (portrait ? 220 : 151);
+    this.actionY = bottom + (portrait ? 220 : 151) + handLift;
     const handX = portrait ? 42 : 38;
     const bankX = w / 2 - (portrait ? 39 : 53);
+    const rightBank = Math.min(bankX, w / 2 - (screen?.right ?? 0) - 21);
+    const leftBank = Math.max(-bankX, -w / 2 + (screen?.left ?? 0) + 21);
     const bankY = portrait ? 45 : 26;
-    const oppositeY = top - 118;
-    const handY = bottom + (portrait ? 106 : 67);
+    const oppositeY = top - Math.max(118, (header?.bottom ?? 0) + 56);
+    const handY = bottom + (portrait ? 106 : 67) + handLift;
+    const playerBadgeX = -w / 2 + Math.max(portrait ? 57 : 91, (screen?.left ?? 0) + (portrait ? 57 : 85));
     const art = [
-      { x: handX, y: handY, badge: [-w / 2 + (portrait ? 57 : 91), handY] },
-      { x: bankX, y: bankY, badge: [bankX - 51, bankY - 177] },
+      { x: handX, y: handY, badge: [playerBadgeX, handY] },
+      { x: rightBank, y: bankY, badge: [rightBank - 51, bankY - 177] },
       { x: portrait ? -42 : 0, y: oppositeY, badge: [portrait ? w / 2 - 90 : 240, oppositeY] },
-      { x: -bankX, y: bankY, badge: [-bankX + 51, bankY + 177] },
+      { x: leftBank, y: bankY, badge: [leftBank + 51, bankY + 177] },
     ];
     this.seatNodes.forEach((node, i) => {
       const place = art[i]!;
@@ -151,20 +164,19 @@ export class TableScene extends Component {
     this.oddsButton?.node.setPosition(0, this.actionY + 41);
     this.statusLabel?.node.getComponent(UITransform)?.setContentSize(w - 52, 35);
     this.turnNeedle?.parent?.setPosition(0, this.centerY);
-    const buttons = [this.homeButton, this.btnRule, this.logButton, this.settlementButton, this.scoreButton];
     buttons.forEach((button, i) => {
       if (!button) return;
       const holder = button.node.parent;
       const control = holder?.name === 'TableControl' ? holder : button.node;
-      control.setPosition(w / 2 - 62 - i * (portrait ? 80 : 113), top - 35);
-      if (control === holder) control.setScale(portrait ? .73 : 1, 1);
+      control.setPosition((header ? header.controlsRight - buttonWidth / 2 : w / 2 - 62) - i * buttonStep, header?.y ?? top - 35);
+      if (control === holder) control.setScale(buttonScale, 1);
     });
     const logLabel = this.logButton?.node.getComponentInChildren(Label);
     if (logLabel) logLabel.string = portrait ? '日志' : '对局日志';
     const settleLabel = this.settlementButton?.node.getComponentInChildren(Label);
     if (settleLabel) settleLabel.string = portrait ? '结算' : '本局结算';
-    this.wallLabel?.node.setPosition(-w / 2 + (portrait ? 65 : 130), top - 35);
-    if (this.wallLabel) this.wallLabel.node.getComponent(UITransform)?.setContentSize(portrait ? 118 : 240, 35);
+    this.wallLabel?.node.setPosition(header?.leadingX ?? -w / 2 + (portrait ? 65 : 130), header?.leadingY ?? top - 35);
+    if (this.wallLabel) this.wallLabel.node.getComponent(UITransform)?.setContentSize(wallWidth, 35);
     if (this.lastState) {
       this.lastState.seats.forEach((seat) => this.renderSeat(seat.seat, this.lastState!));
       this.pointToCurrentSeat(this.lastState);

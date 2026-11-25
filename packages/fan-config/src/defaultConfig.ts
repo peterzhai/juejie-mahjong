@@ -3,6 +3,7 @@
 import { FAN_CONFIG_VERSION } from './version.js';
 import { clonePreset } from './presets.js';
 import { autoDisableUnmetFans } from './resolve.js';
+import { cloneConfigData } from './cloneConfigData.js';
 import type { BonusFanDefinition, FanConfig, FanDefinition } from './schema.js';
 
 /** PRD 5.5 默认番型表（全部可配） */
@@ -72,8 +73,8 @@ export function defaultFanConfig(): FanConfig {
         onlyWhenWild: true,
       },
     },
-    fans: structuredClone(DEFAULT_FANS),
-    bonusFans: structuredClone(DEFAULT_BONUS_FANS),
+    fans: cloneConfigData(DEFAULT_FANS),
+    bonusFans: cloneConfigData(DEFAULT_BONUS_FANS),
     rules: {
       missedWinLock: true,
       multiWinEnabled: false,

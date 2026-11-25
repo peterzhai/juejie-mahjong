@@ -25,6 +25,8 @@ interface WxWindowInfo {
   pixelRatio: number;
   screenWidth: number;
   screenHeight: number;
+  windowWidth?: number;
+  windowHeight?: number;
   safeArea?: {
     top: number;
     bottom: number;
@@ -42,8 +44,12 @@ interface WxGlobal {
   getClipboardData(opts: { success?: (res: { data: string }) => void; fail?: (e: unknown) => void }): void;
   getWindowInfo?(): WxWindowInfo;
   getSystemInfoSync?(): WxWindowInfo;
+  getMenuButtonBoundingClientRect?(): { left: number; top: number; right: number; bottom: number };
+  onDeviceOrientationChange?(callback: () => void): void;
+  offDeviceOrientationChange?(callback: () => void): void;
   onHide(cb: () => void): void;
   onShow(cb: () => void): void;
+  offShow?(callback: () => void): void;
 }
 
 declare const wx: WxGlobal | undefined;
@@ -128,6 +134,30 @@ export class WxAdapter implements IPlatform {
 
   getPlatform(): 'wechat' {
     return 'wechat';
+  }
+
+  getMenuButtonRect(): { left: number; top: number; bottom: number } | null {
+    try {
+      const info = wx?.getWindowInfo?.() ?? wx?.getSystemInfoSync?.();
+      const menu = wx?.getMenuButtonBoundingClientRect?.();
+      if (!info || !menu) return null;
+      const width = info.windowWidth || info.screenWidth;
+      const height = info.windowHeight || info.screenHeight;
+      if (!(menu.left >= 0 && menu.right > menu.left && menu.right <= width
+        && menu.top >= 0 && menu.bottom > menu.top && menu.bottom <= height)) return null;
+      return { left: menu.left / width, top: menu.top / height, bottom: menu.bottom / height };
+    } catch {
+      return null;
+    }
+  }
+
+  watchScreenObstructions(callback: () => void): () => void {
+    wx?.onDeviceOrientationChange?.(callback);
+    wx?.onShow?.(callback);
+    return () => {
+      wx?.offDeviceOrientationChange?.(callback);
+      wx?.offShow?.(callback);
+    };
   }
 
   /** 微信刘海屏安全区：优先 wx.getWindowInfo（新 API），回退 getSystemInfoSync */
